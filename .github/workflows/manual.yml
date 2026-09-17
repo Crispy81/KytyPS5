@@ -1,0 +1,42 @@
+name: Build KytyPS5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download source ZIP
+        uses: actions/checkout@v4
+
+      - name: Extract source
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath source -Force
+
+      - name: List source
+        shell: powershell
+        run: |
+          Get-ChildItem -Path source -Recurse -Depth 2 | Select-Object FullName
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure
+        shell: powershell
+        run: |
+          cmake -S source -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: powershell
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-build
+          path: build/**
