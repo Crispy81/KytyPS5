@@ -36,6 +36,8 @@ jobs:
             exit $LASTEXITCODE
           }
 
+          exit 0
+
       - name: Setup Visual Studio environment
         uses: ilammy/msvc-dev-cmd@v1
 
