@@ -122,4 +122,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: KytyPS5-build
-          path: kyty-base/_Build/windows/**
+          path: |
+              kyty-base/_Build/windows/*.exe
+              kyty-base/_Build/windows/*.dll
