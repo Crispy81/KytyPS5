@@ -1,3 +1,4 @@
+```yaml
 name: Build KytyPS5
 
 on:
@@ -5,37 +6,120 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
-      - name: Download source ZIP
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source
-        shell: powershell
+      - name: Clone KytyPS5 with submodules
+        shell: pwsh
+        run: |
+          git clone --recurse-submodules --depth 1 https://github.com/shadowbeat070/KytyPS5.git kyty-base
+
+      - name: Extract Silent Hill source
+        shell: pwsh
         run: |
           $zip = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
-          Expand-Archive -Path $zip.FullName -DestinationPath source -Force
+          Expand-Archive -Path $zip.FullName -DestinationPath extracted -Force
 
-      - name: List source
-        shell: powershell
+          $src = Get-ChildItem extracted -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "CMakeLists.txt") } |
+            Select-Object -First 1
+
+          if (-not $src) {
+            throw "Could not find CMakeLists.txt in the extracted source."
+          }
+
+          robocopy $src.FullName kyty-base /E /XD 3rdparty .git
+
+          if ($LASTEXITCODE -gt 7) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Setup Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Locate vcpkg
+        id: vcpkg
+        shell: pwsh
         run: |
-          Get-ChildItem -Path source -Recurse -Depth 2 | Select-Object FullName
+          $vcpkgRoot = Split-Path (Get-Command vcpkg).Source
+          $portHash = (Get-FileHash "$vcpkgRoot\ports\glslang\vcpkg.json" -Algorithm SHA256).Hash
 
-      - name: Install CMake
-        uses: lukka/get-cmake@latest
+          "root=$vcpkgRoot" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          "port_hash=$($portHash.ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Cache glslang
+        id: glslang_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.vcpkg.outputs.root }}\installed\x64-windows
+          key: glslang-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg.outputs.port_hash }}-tools-opt
+
+      - name: Install glslang
+        shell: pwsh
+        run: |
+          $vcpkgRoot = "${{ steps.vcpkg.outputs.root }}"
+
+          if ("${{ steps.glslang_cache.outputs.cache-hit }}" -ne "true") {
+            vcpkg install glslang[tools,opt]:x64-windows
+          }
+
+          "$vcpkgRoot\installed\x64-windows\tools\glslang" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Verify toolchain
+        shell: cmd
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang-cl --version
+          glslangValidator --version
+          echo Qt6_DIR=%Qt6_DIR%
 
       - name: Configure
-        shell: powershell
+        shell: cmd
+        working-directory: kyty-base
         run: |
-          cmake -S source/KytyPS5-silent-hill-bringup -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B _Build/windows ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
+            -DCMAKE_C_COMPILER=clang-cl ^
+            -DCMAKE_CXX_COMPILER=clang-cl ^
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
+
       - name: Build
-        shell: powershell
+        shell: cmd
+        working-directory: kyty-base
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build _Build/windows --parallel
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: KytyPS5-build
-          path: build/**
+          path: kyty-base/_Build/windows/**
+```
