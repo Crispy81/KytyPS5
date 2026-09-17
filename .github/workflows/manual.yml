@@ -1,4 +1,3 @@
-```yaml
 name: Build KytyPS5
 
 on:
@@ -122,4 +121,3 @@ jobs:
         with:
           name: KytyPS5-build
           path: kyty-base/_Build/windows/**
-```
