@@ -332,7 +332,7 @@ void CommandScheduler::DumpGpuWork(uint64_t failed_tick, uint64_t completed_tick
 	const uint64_t first = pending - std::min<uint64_t>(pending - begin, 16);
 	const uint64_t end = std::min<uint64_t>(m_gpu_trace_count, pending + 256);
 	for (uint64_t i = first; i < end; ++i) emit(i);
-	const uint64_t tail = m_gpu_trace_count - std::min<uint64_t>(count, 64);
+	const uint64_t tail = m_gpu_trace_count - std::min<uint64_t>(count, 256);
 	if (tail > end) {
 		Log::WriteToConsoleAndLog("GPU TRACE: intervening records omitted\n");
 	}
