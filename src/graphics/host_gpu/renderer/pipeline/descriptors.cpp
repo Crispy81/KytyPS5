@@ -885,6 +885,10 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
                                              DrawTargets&                       targets) {
 	bool uses_dma        = false;
 	bool uses_image_heap = false;
+	// Discover BDA pages before resolving descriptor buffer owners: discovery can merge buffers.
+	for (auto* stage: stages) {
+		CacheDmaBases(*stage->runtime);
+	}
 	FindBuffers(stages);
 	for (auto* stage: stages) {
 		uses_dma |= stage->runtime->module->info.info.uses_dma;

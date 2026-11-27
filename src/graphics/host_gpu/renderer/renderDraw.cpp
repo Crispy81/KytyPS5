@@ -20,6 +20,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/vertexWindowOffset.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
@@ -338,6 +339,8 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			viewport.width  = guest.xscale * 2.0f;
 			viewport.height = guest.yscale * 2.0f;
 		}
+		ApplyVertexWindowOffset(viewport.x, viewport.y, ctx.GetModeControl().vtx_window_offset_enable,
+		                        vp.window_offset_x, vp.window_offset_y);
 		viewport.minDepth =
 		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
 		viewport.maxDepth = guest.zscale + guest.zoffset;

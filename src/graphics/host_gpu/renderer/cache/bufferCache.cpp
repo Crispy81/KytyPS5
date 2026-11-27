@@ -349,6 +349,9 @@ BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 	if (owner != nullptr && *owner) {
 		auto& buffer = m_slot_buffers[*owner];
 		if (buffer.IsInBounds(vaddr, size)) {
+			// BDA discovery and fault recovery use FindBuffer without ObtainBuffer.
+			// Keep known live pages from aging out solely because no descriptor binds them.
+			TouchBuffer(buffer);
 			return *owner;
 		}
 	}

@@ -304,15 +304,6 @@ static void McPrint(const char* func, const HW::ModeControl& c) {
 }
 
 static void McCheck(const HW::ModeControl& c) {
-	if (c.vtx_window_offset_enable) {
-		static bool logged = false;
-		if (!logged) {
-			LOGF("\t temporary: PA_SU_SC_MODE_CNTL.VTX_WINDOW_OFFSET_ENABLE is not fully "
-			     "implemented; continuing without vertex window "
-			     "offset adjustment\n");
-			logged = true;
-		}
-	}
 	EXIT_NOT_IMPLEMENTED(c.persp_corr_dis != false);
 }
 

@@ -225,21 +225,37 @@ bool RenderExecutor::TryConsumeComputeFill(const ShaderComputeInputInfo& input,
 	return true;
 }
 
-// Global loads read pages without a buffer as zero. Cache the 32 KiB after each base the shader
-// takes from user data or scalar loads before the dispatch reads it.
-static void CacheDmaBases(RenderContext& context, const ShaderStageRuntime& stage) {
-	const auto back = [&context](uint32_t low, uint32_t high) {
-		const auto base = low | uint64_t {high} << 32u;
+// Apply the same bounded preparation to compute and graphics stages. A missing
+// page returns a substitute value in the emitted global-load path.
+void RenderExecutor::CacheDmaBases(const ShaderStageRuntime& stage) {
+	const auto& info = stage.module->info.info;
+	if (!info.uses_dma) {
+		return;
+	}
+	const auto back = [this](uint32_t low, uint32_t high) {
+		const uint64_t base = low | uint64_t {high} << 32u;
+		if (base == 0 || base > UINT64_MAX - 2 * BufferCache::CACHING_PAGESIZE) {
+			return;
+		}
 		for (uint64_t index = 0; index <= 2; ++index) {
 			const auto page = base + index * BufferCache::CACHING_PAGESIZE;
-			if (context.IsMapped(page, 1)) (void)context.GetBufferCache().FindBuffer(page, 1);
+			if (m_context.IsMapped(page, 1)) {
+				(void)m_context.GetBufferCache().FindBuffer(page, 1);
+			}
 		}
 	};
-	const auto& info = stage.module->info.info;
 	const auto& flat = stage.resources->flattened_srt;
 	const auto& user = stage.resources->user_data;
-	for (const auto [low, high]: info.address_bases) back(flat[low], flat[high]);
-	for (const auto [low, high]: info.user_address_bases) back(user[low], user[high]);
+	for (const auto [low, high]: info.address_bases) {
+		if (low < flat.size() && high < flat.size()) {
+			back(flat[low], flat[high]);
+		}
+	}
+	for (const auto [low, high]: info.user_address_bases) {
+		if (low < user.size() && high < user.size()) {
+			back(user[low], user[high]);
+		}
+	}
 }
 
 // Recognized traversals trace the mirror of the TLAS whose header address the shader loads from
@@ -389,7 +405,7 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		          bindings.shader_data.begin() + program.bindings.dispatch_thread_dword);
 	}
 	PreparedBindings* descriptor_stage = &bindings;
-	CacheDmaBases(m_context, input_info.stage);
+	CacheDmaBases(input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
@@ -529,7 +545,7 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 	auto& bindings = m_compute_bindings;
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
-	CacheDmaBases(m_context, input_info.stage);
+	CacheDmaBases(input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = input_info.stage.module->info;
 	if (program.info.uses_dma) {

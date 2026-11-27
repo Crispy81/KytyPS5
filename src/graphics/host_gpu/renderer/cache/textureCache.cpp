@@ -733,19 +733,16 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 
 namespace BcAlias {
 
-bool IsBc6h(vk::Format format) {
-	return format == vk::Format::eBc6HUfloatBlock || format == vk::Format::eBc6HSfloatBlock;
-}
-
 // A raw descriptor for the same encoded blocks must not bind a sampled-only
-// BC6H allocation as a storage image. The guest-format buffer is the bridge.
+// compressed allocation as a storage image. The guest-format buffer is the bridge.
 bool NeedsRawStorage(const ImageInfo& requested, const Image& cached) {
-	return IsBc6h(cached.info.pixel_format) && !requested.IsBlock() &&
+	return cached.info.IsBlock() && !requested.IsBlock() &&
 	       !(cached.backing.usage & vk::ImageUsageFlagBits::eStorage) &&
 	       requested.data == cached.info.data &&
 	       requested.type == cached.info.type &&
 	       requested.tile_mode == cached.info.tile_mode &&
-	       requested.bytes_per_block == 16 && cached.info.bytes_per_block == 16 &&
+	       (requested.bytes_per_block == 8 || requested.bytes_per_block == 16) &&
+	       requested.bytes_per_block == cached.info.bytes_per_block &&
 	       requested.samples == 1 && cached.info.samples == 1 &&
 	       requested.resources == cached.info.resources &&
 	       requested.BlockExtent() == cached.info.BlockExtent() &&
@@ -760,7 +757,7 @@ bool Matches(const ImageInfo& requested, const ImageInfo& cached) {
 	       requested.samples == 1 && cached.samples == 1 &&
 	       (requested.data != cached.data || requested.resources != cached.resources ||
 	        requested.BlockExtent() != cached.BlockExtent() ||
-	        (IsBc6h(requested.pixel_format) && !cached.IsBlock())) &&
+	        (requested.IsBlock() && !cached.IsBlock())) &&
 	       !TextureCache::SameBacking(cached, requested, false);
 }
 
@@ -772,6 +769,13 @@ bool Publish(TextureCache& cache, Image& image) {
 	auto [buffer, offset] =
 	    cache.m_buffer_cache.ObtainBuffer(image.info.data.address, image.info.data.size, true);
 	cache.DownloadImage(image, *buffer, offset, image.info.data.size, image.info.resources.levels);
+	// Report completed recording of an actual copy, not just a capability probe.
+	static std::atomic<uint32_t> published {0};
+	if (published.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF("BC alias publish: format=%u addr=0x%016" PRIx64 " size=0x%" PRIx64 "\n",
+		     static_cast<uint32_t>(image.info.pixel_format), image.info.data.address,
+		     image.info.data.size);
+	}
 	image.ClearGpuModified();
 	image.MarkBufferModified();
 	return true;
@@ -811,11 +815,11 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		BcAlias::Resolve(*this, cached_id, merged_id);
 		const auto* remaining = m_slot_images.try_get(cached_id);
 		if (remaining != nullptr && remaining->registered) {
-			EXIT("BC6H: unable to preserve compressed blocks for raw storage alias\n");
+			EXIT("BC storage: unable to preserve compressed blocks for raw storage alias\n");
 		}
 		static std::atomic_flag logged = ATOMIC_FLAG_INIT;
 		if (!logged.test_and_set(std::memory_order_relaxed)) {
-			Log::WriteToConsoleAndLog("BC6H: using raw block storage alias transfer.\n");
+			Log::WriteToConsoleAndLog("BC storage: using raw block storage alias transfer.\n");
 		}
 		return {merged_id};
 	}

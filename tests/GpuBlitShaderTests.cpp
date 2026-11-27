@@ -1,5 +1,6 @@
 #include "gpu_blit_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/vertexWindowOffset.h"
 
 #include <gtest/gtest.h>
 #include <spirv/unified1/spirv.hpp>
@@ -8,6 +9,20 @@
 #include <iterator>
 
 namespace {
+
+TEST(VertexWindowOffset, AppliesSignedTranslationOnlyWhenEnabled) {
+	float x = 12.5f;
+	float y = -8.25f;
+	Libs::Graphics::ApplyVertexWindowOffset(x, y, false, -32, 16);
+	EXPECT_FLOAT_EQ(x, 12.5f);
+	EXPECT_FLOAT_EQ(y, -8.25f);
+	Libs::Graphics::ApplyVertexWindowOffset(x, y, true, -32, 16);
+	EXPECT_FLOAT_EQ(x, -19.5f);
+	EXPECT_FLOAT_EQ(y, 7.75f);
+	Libs::Graphics::ApplyVertexWindowOffset(x, y, true, 0, 0);
+	EXPECT_FLOAT_EQ(x, -19.5f);
+	EXPECT_FLOAT_EQ(y, 7.75f);
+}
 
 TEST(VideoOutFormat, SourceFlagsAndRouting) {
 	struct Case {
