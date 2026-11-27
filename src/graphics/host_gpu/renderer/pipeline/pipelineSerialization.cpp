@@ -8,6 +8,10 @@
 #include "graphics/shader/recompiler/ir/Serialize.h"
 
 #include <algorithm>
+#include <atomic>
+#include <charconv>
+#include <cstdlib>
+#include <fstream>
 #include <chrono>
 #include <cstring>
 #include <fmt/format.h>
@@ -41,8 +45,8 @@ struct Frame {
 	uint64_t checksum        = 0; // XXH3 of the compressed bytes.
 };
 
-// Changes with every build, so records never meet code that encodes them differently. Zero when
-// the executable cannot be found.
+// Hash the exact executable, not its filesystem timestamp. Identical binary copies can reuse
+// records; changed binaries still invalidate them. Zero when the executable cannot be read.
 uint64_t BuildStamp() {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	std::array<wchar_t, 32768> name {};
@@ -56,9 +60,84 @@ uint64_t BuildStamp() {
 #else
 	const std::filesystem::path path = "/proc/self/exe";
 #endif
-	std::error_code error;
-	const auto      time = std::filesystem::last_write_time(path, error).time_since_epoch().count();
-	return error ? 0 : static_cast<uint64_t>(time);
+	std::ifstream file(path, std::ios::binary);
+	if (!file) {
+		return 0;
+	}
+	std::unique_ptr<XXH3_state_t, decltype(&XXH3_freeState)> state(XXH3_createState(), XXH3_freeState);
+	if (!state || XXH3_64bits_reset(state.get()) != XXH_OK) {
+		return 0;
+	}
+	std::vector<char> chunk(256 * 1024);
+	while (file.read(chunk.data(), static_cast<std::streamsize>(chunk.size())) || file.gcount() != 0) {
+		if (XXH3_64bits_update(state.get(), chunk.data(), static_cast<size_t>(file.gcount())) != XXH_OK) {
+			return 0;
+		}
+	}
+	return file.eof() && !file.bad() ? XXH3_64bits_digest(state.get()) : 0;
+}
+
+// The setting affects startup workers only. Zero or an invalid value uses the
+// existing conservative default (half the logical CPUs).
+size_t WarmupThreads() {
+	const size_t available = std::max(1u, std::thread::hardware_concurrency());
+	const char* value = std::getenv("KYTY_SHADER_THREADS");
+	if (value != nullptr) {
+		size_t requested = 0;
+		const auto end = value + std::strlen(value);
+		const auto result = std::from_chars(value, end, requested);
+		if (result.ec == std::errc {} && result.ptr == end && requested != 0) {
+			return std::min(requested, available);
+		}
+	}
+	return Common::ParallelThreads();
+}
+
+// All jobs are independent. The calling thread reports progress and pumps
+// window events; worker threads never touch SDL or mutable cache containers.
+template <typename Job>
+void CompileWarmupJobs(size_t count, size_t workers, std::string_view phase,
+                       const ShaderWarmupProgress& progress, const Job& job) {
+	if (count == 0) {
+		return;
+	}
+	std::atomic_size_t next {0}, completed {0};
+	std::mutex mutex;
+	std::condition_variable ready;
+	const auto report = [&](size_t done) {
+		if (progress) {
+			progress(phase, done, count);
+		}
+	};
+	Log::WriteToConsoleAndLog(fmt::format("Shader precompile: {} ({} jobs, {} workers)\n",
+	                                      phase, count, std::min(count, workers)));
+	report(0);
+	std::vector<std::jthread> threads;
+	for (size_t i = 0; i < std::min(count, workers); ++i) {
+		threads.emplace_back([&] {
+			for (auto index = next.fetch_add(1); index < count; index = next.fetch_add(1)) {
+				job(index);
+				if (completed.fetch_add(1, std::memory_order_acq_rel) + 1 == count) {
+					std::lock_guard lock(mutex);
+					ready.notify_one();
+				}
+			}
+		});
+	}
+	{
+		std::unique_lock lock(mutex);
+		while (completed.load(std::memory_order_acquire) != count) {
+			ready.wait_for(lock, std::chrono::milliseconds(100));
+			const auto done = completed.load(std::memory_order_acquire);
+			lock.unlock();
+			report(done);
+			lock.lock();
+		}
+	}
+	threads.clear(); // Join before any cache data is used or released.
+	report(count);
+	Log::WriteToConsoleAndLog(fmt::format("Shader precompile: {} complete ({}/{})\n",
+	                                      phase, count, count));
 }
 
 // What every record depends on besides its own fields; empty when the build is unknown.
@@ -137,7 +216,7 @@ void ShaderStoreWriter::Post(Common::UniqueFunction<void>&& job) {
 	m_ready.notify_one();
 }
 
-void PipelineCache::WarmUp(const std::filesystem::path& path) {
+void PipelineCache::WarmUp(const std::filesystem::path& path, const ShaderWarmupProgress& progress) {
 	if (path.empty()) {
 		return;
 	}
@@ -146,6 +225,7 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 		return;
 	}
 	const auto           start = std::chrono::steady_clock::now();
+	const auto workers = WarmupThreads();
 	std::vector<uint8_t> bytes;
 	if (Common::File file;
 	    Common::File::IsFileExisting(path) && file.Open(path, Common::File::Mode::Read)) {
@@ -157,16 +237,40 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "Shader cache: compiling shaders and pipelines from {} ({:.1f} MB) with {} threads\n",
 	    Common::PathToString(path), static_cast<double>(bytes.size()) / 1'000'000.0,
-	    Common::ParallelThreads()));
+	    workers));
 	auto       records = std::span<const uint8_t>(bytes);
 	const bool reusable =
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
 	if (reusable) {
 		records = records.subspan(header.size());
-		// Reuse decompression storage across cache records.
+		// Decode records on the startup thread. Batch shader modules so the
+		// extra uncompressed SPIR-V memory is bounded, and join each batch
+		// before further insertions can move the modules in a program.
 		std::vector<uint8_t> raw;
-		while (LoadRecord(records, raw)) {
+		std::vector<WarmupModule> pending;
+		size_t batch_bytes = 0;
+		const auto compile_batch = [&] {
+			CompileWarmupJobs(pending.size(), workers, "Compiling cached shaders", progress,
+			                  [&](size_t i) {
+				auto& entry = pending[i];
+				entry.program->modules[entry.index].module = CompileSPV(entry.spirv, m_graphics.device);
+			});
+			pending.clear();
+			batch_bytes = 0;
+		};
+		while (true) {
+			const auto before = pending.size();
+			if (!LoadRecord(records, raw, &pending)) {
+				break;
+			}
+			if (pending.size() != before) {
+				batch_bytes += pending.back().spirv.size() * sizeof(uint32_t);
+			}
+			if (pending.size() >= 256 || batch_bytes >= 64 * 1024 * 1024) {
+				compile_batch();
+			}
 		}
+		compile_batch();
 	}
 	// A damaged record ends the store; the records before it stay.
 	m_store.Open(path, header, reusable ? bytes.size() - records.size() : 0);
@@ -187,7 +291,8 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 			});
 		}
 	}
-	Common::ParallelFor(jobs.size(), [&](size_t i) { jobs[i](); });
+	CompileWarmupJobs(jobs.size(), workers, "Compiling cached pipelines", progress,
+	                  [&](size_t i) { jobs[i](); });
 	// A key with a stage missing from the store keeps no pipeline.
 	std::erase_if(m_graphics_pipelines,
 	              [](const auto& entry) { return entry.second.pipeline == nullptr; });
@@ -203,7 +308,8 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	        .count()));
 }
 
-bool PipelineCache::LoadRecord(std::span<const uint8_t>& records, std::vector<uint8_t>& raw) {
+bool PipelineCache::LoadRecord(std::span<const uint8_t>& records, std::vector<uint8_t>& raw,
+                               std::vector<WarmupModule>* pending) {
 	Frame frame;
 	if (records.size() < sizeof(frame)) {
 		return false;
@@ -244,8 +350,15 @@ bool PipelineCache::LoadRecord(std::span<const uint8_t>& records, std::vector<ui
 				m_program_cache.erase(program);
 				return false;
 			}
-			module.module = CompileSPV(spirv, m_graphics.device);
-			program->second.modules.push_back(std::move(module));
+			if (pending != nullptr) {
+				const auto index = program->second.modules.size();
+				module.module = nullptr;
+				program->second.modules.push_back(std::move(module));
+				pending->push_back({&program->second, index, std::move(spirv)});
+			} else {
+				module.module = CompileSPV(spirv, m_graphics.device);
+				program->second.modules.push_back(std::move(module));
+			}
 			break;
 		}
 		case Record::GraphicsPipeline: {

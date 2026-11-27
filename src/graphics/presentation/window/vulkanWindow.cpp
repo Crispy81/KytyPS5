@@ -1016,7 +1016,16 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not create Vulkan memory allocator");
 	}
 
-	render_context = std::make_unique<RenderContext>(graphic_ctx);
+	// Renderer construction runs before the guest and presenter start. Only the
+	// startup thread touches SDL, while Vulkan creation jobs run on workers.
+	render_context = std::make_unique<RenderContext>(
+	    graphic_ctx, ShaderStorePath(),
+	    [this](std::string_view stage, size_t done, size_t total) {
+		    const auto title = fmt::format("KytyPS5 - {} ({}/{})", stage, done, total);
+		    SDL_SetWindowTitle(window, title.c_str());
+		    SDL_PumpEvents();
+	    });
+	SDL_SetWindowTitle(window, "KytyPS5 - Starting game");
 	LibKernel::Memory::InstallGpuResources(render_context.get());
 	presenter = std::make_unique<Presenter>(*this);
 	Vr::OpenXrStartSession(graphic_ctx);

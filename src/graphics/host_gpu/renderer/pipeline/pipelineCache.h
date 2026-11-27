@@ -18,6 +18,8 @@
 #include <condition_variable>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
+#include <string_view>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -177,11 +179,15 @@ private:
 };
 
 // The owning renderer serializes access, including saves while the GPU is running.
+// Invoked only on the startup/main thread; completed and total are phase-local.
+using ShaderWarmupProgress = std::function<void(std::string_view, size_t, size_t)>;
+
 class PipelineCache {
 public:
 	// Without a shader store path nothing is kept across runs.
 	PipelineCache(GraphicContext& graphics, ShaderRecompiler::IR::ImageHeapSource* image_heap,
-	              const std::filesystem::path& shader_store = {});
+	              const std::filesystem::path& shader_store = {},
+	              const ShaderWarmupProgress& progress = {});
 	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 	// Finishes the queued writes and stops the store thread, then writes the driver cache if it
@@ -275,8 +281,14 @@ private:
 	void WriteDriverCache() const;
 
 	// pipelineSerialization.cpp
-	void WarmUp(const std::filesystem::path& path);
-	bool LoadRecord(std::span<const uint8_t>& records, std::vector<uint8_t>& raw);
+	struct WarmupModule {
+		Program* program;
+		size_t index;
+		std::vector<uint32_t> spirv;
+	};
+	void WarmUp(const std::filesystem::path& path, const ShaderWarmupProgress& progress);
+	bool LoadRecord(std::span<const uint8_t>& records, std::vector<uint8_t>& raw,
+	                std::vector<WarmupModule>* pending = nullptr);
 	void StoreModule(const ProgramKey& key, const Program& program, const ShaderModule& module,
 	                 const std::vector<uint32_t>& spirv);
 	void StorePipeline(const GraphicsPipelineKey& key);

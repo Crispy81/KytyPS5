@@ -34,7 +34,8 @@ class GuestGpu;
 class RenderContext {
 public:
 	explicit RenderContext(GraphicContext&              graphics,
-	                       const std::filesystem::path& shader_store = ShaderStorePath());
+	                       const std::filesystem::path& shader_store = ShaderStorePath(),
+	                       const ShaderWarmupProgress& progress = {});
 	~RenderContext();
 	KYTY_CLASS_NO_COPY(RenderContext);
 
