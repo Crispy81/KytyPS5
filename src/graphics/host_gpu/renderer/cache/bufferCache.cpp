@@ -441,7 +441,7 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 }
 
 bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t size, bool is_written,
-                                    bool is_texel_buffer) {
+                                    bool is_texel_buffer, bool sync_read_write_image) {
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size = 0;
 	m_memory_tracker.ForEachUploadRange(
@@ -454,13 +454,17 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		    const BufferUpload upload {&buffer, copies.size()};
 		    UploadCopies({&upload, 1}, copies, total_size);
 	    });
-	if (is_texel_buffer && !is_written) {
-		const bool synchronized = SynchronizeBufferFromImage(buffer, vaddr, size);
+	// Read-modify-write descriptors also need the previous image contents. Limit this
+	// case to exact image ranges so copying cannot clobber neighboring buffer data.
+	if (is_texel_buffer && (!is_written || sync_read_write_image)) {
+		const bool synchronized = SynchronizeBufferFromImage(buffer, vaddr, size, is_written);
 		if (synchronized) {
 			static std::atomic<uint32_t> reported {0};
-			if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF("Image-buffer synchronization: addr=0x%016" PRIx64
-				     " size=0x%" PRIx64 "\n", vaddr, size);
+			static std::atomic<uint32_t> reported_read_write {0};
+			auto& counter = is_written ? reported_read_write : reported;
+			if (counter.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF("Image-buffer synchronization%s: addr=0x%016" PRIx64
+				     " size=0x%" PRIx64 "\n", is_written ? " (read-write)" : "", vaddr, size);
 			}
 		}
 		return synchronized;
@@ -517,7 +521,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
                                                        bool is_written, bool is_texel_buffer,
-                                                       BufferId id) {
+                                                       BufferId id, bool sync_read_write_image) {
 	EXIT_IF(!(GuestRange {vaddr, size}.Valid()));
 
 	if (!is_written && size <= CACHING_PAGESIZE &&
@@ -555,7 +559,8 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	}
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
-	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
+	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer,
+	                        sync_read_write_image);
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 		ForgetColorMetadataChecks(vaddr, size);
