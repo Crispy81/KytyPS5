@@ -809,7 +809,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	if (binding == BindingType::Storage && BcAlias::NeedsRawStorage(requested, cached)) {
 		// Publish the original encoded bytes before replacing the sampled allocation.
 		BcAlias::Resolve(*this, cached_id, merged_id);
-		if (cached.registered) {
+		const auto* remaining = m_slot_images.try_get(cached_id);
+		if (remaining != nullptr && remaining->registered) {
 			EXIT("BC6H: unable to preserve compressed blocks for raw storage alias\n");
 		}
 		static std::atomic_flag logged = ATOMIC_FLAG_INIT;
