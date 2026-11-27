@@ -31,6 +31,20 @@ constexpr uint64_t GdsBufferSize = 64 * 1024;
 // GPU-modified ranges come as many small scattered islands, so a readback widens to a window.
 constexpr uint64_t DownloadWindowSize = 512 * 1024;
 
+// Merge only adjacent regions within the same source and destination buffers.
+void AppendCopy(std::vector<vk::BufferCopy>& copies, uint64_t src, uint64_t dst,
+                uint64_t size, bool same_buffer = true) {
+	if (same_buffer && !copies.empty()) {
+		auto& previous = copies.back();
+		if (previous.srcOffset + previous.size == src &&
+		    previous.dstOffset + previous.size == dst) {
+			previous.size += size;
+			return;
+		}
+	}
+	copies.emplace_back(src, dst, size);
+}
+
 std::pair<Buffer*, uint64_t> UploadMemory(GraphicContext& graphics, CommandScheduler& scheduler,
                                         StreamBuffer& staging, uint64_t size, uint64_t alignment,
                                         vk::BufferUsageFlags usage, const auto& write) {
@@ -162,7 +176,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		    m_memory_tracker.ValidateGpuDirtyPages(m_gpu_modified_ranges, address, bytes,
 		                                           "buffer download");
 		    m_gpu_modified_ranges.ForEachInRange(address, bytes, [&](uint64_t start, uint64_t end) {
-			    copies.emplace_back(start - buffer_address, total_size, end - start);
+			    AppendCopy(copies, start - buffer_address, total_size, end - start);
 			    // Start each packed range on its own 64-byte cache line.
 			    total_size += Common::AlignUp(end - start, 64);
 		    });
@@ -188,8 +202,15 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	before.buffer              = buffer.Handle();
-	before.offset              = 0;
-	before.size                = buffer.Size();
+	// The dependency covers every copied byte, not the entire backing heap.
+	uint64_t first_byte = buffer.Size();
+	uint64_t last_byte = 0;
+	for (const auto& copy: copies) {
+		first_byte = std::min(first_byte, copy.srcOffset);
+		last_byte = std::max(last_byte, copy.srcOffset + copy.size);
+	}
+	before.offset              = first_byte;
+	before.size                = last_byte - first_byte;
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 1, &before, 0,
 	                       nullptr);
@@ -419,7 +440,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	m_memory_tracker.ForEachUploadRange(
 	    vaddr, size, is_written,
 	    [&](uint64_t address, uint64_t bytes) noexcept {
-		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
+		    AppendCopy(copies, total_size, buffer.Offset(address), bytes);
 		    total_size += bytes;
 	    },
 	    [&]() noexcept {
@@ -743,6 +764,9 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 		std::lock_guard lock(m_bda_sync_mutex);
 		return std::exchange(m_bda_sync, {});
 	}();
+	if (queued.Empty()) {
+		return;
+	}
 	std::vector<vk::BufferCopy> copies;
 	std::vector<BufferUpload>   uploads;
 	uint64_t                    total_size = 0;
@@ -761,10 +785,11 @@ void BufferCache::SynchronizeBda(const RangeSet& mapped) {
 					m_memory_tracker.ForEachUploadRange(
 					    first, last - first, false,
 					    [&](uint64_t address, uint64_t bytes) noexcept {
-						    if (uploads.empty() || uploads.back().buffer != &buffer) {
+						    const bool same_buffer = !uploads.empty() && uploads.back().buffer == &buffer;
+						    if (!same_buffer) {
 							    uploads.push_back({&buffer, 0});
 						    }
-						    copies.emplace_back(total_size, buffer.Offset(address), bytes);
+						    AppendCopy(copies, total_size, buffer.Offset(address), bytes, same_buffer);
 						    uploads.back().end = copies.size();
 						    total_size += bytes;
 					    },

@@ -42,12 +42,15 @@ public:
 		while (it != m_ranges.end() && it->first < end) {
 			const auto begin = it->first;
 			const auto last  = it->second;
-			it               = m_ranges.erase(it);
+			// Retain the existing node when trimming the end of a dirty range.
 			if (begin < address) {
-				m_ranges.emplace(begin, address);
+				it->second = address;
+				++it;
+			} else {
+				it = m_ranges.erase(it);
 			}
 			if (last > end) {
-				m_ranges.emplace(end, last);
+				m_ranges.emplace_hint(it, end, last);
 				break;
 			}
 		}

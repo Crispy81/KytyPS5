@@ -163,7 +163,9 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
 	if (reusable) {
 		records = records.subspan(header.size());
-		while (LoadRecord(records)) {
+		// Reuse decompression storage across cache records.
+		std::vector<uint8_t> raw;
+		while (LoadRecord(records, raw)) {
 		}
 	}
 	// A damaged record ends the store; the records before it stay.
@@ -201,7 +203,7 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	        .count()));
 }
 
-bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
+bool PipelineCache::LoadRecord(std::span<const uint8_t>& records, std::vector<uint8_t>& raw) {
 	Frame frame;
 	if (records.size() < sizeof(frame)) {
 		return false;
@@ -215,7 +217,7 @@ bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
 	    ZSTD_getFrameContentSize(compressed.data(), compressed.size()) != frame.raw_size) {
 		return false;
 	}
-	std::vector<uint8_t> raw(frame.raw_size);
+	raw.resize(frame.raw_size);
 	if (ZSTD_decompress(raw.data(), raw.size(), compressed.data(), compressed.size()) != raw.size()) {
 		return false;
 	}

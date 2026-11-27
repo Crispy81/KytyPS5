@@ -2158,7 +2158,7 @@ void TextureCache::RunGarbageCollector() {
 			deletions = 20;
 		}
 		age = std::min(age, tick);
-		std::vector<ImageId> candidates;
+		Common::SmallVector<ImageId, 64> candidates;
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
 		// first.
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) { candidates.push_back(id); });
