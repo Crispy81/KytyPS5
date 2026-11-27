@@ -15,6 +15,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -426,7 +427,15 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		    UploadCopies({&upload, 1}, copies, total_size);
 	    });
 	if (is_texel_buffer && !is_written) {
-		return SynchronizeBufferFromImage(buffer, vaddr, size);
+		const bool synchronized = SynchronizeBufferFromImage(buffer, vaddr, size);
+		if (synchronized) {
+			static std::atomic<uint32_t> reported {0};
+			if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF("Image-buffer synchronization: addr=0x%016" PRIx64
+				     " size=0x%" PRIx64 "\n", vaddr, size);
+			}
+		}
+		return synchronized;
 	}
 	return false;
 }
@@ -485,7 +494,11 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 
 	if (!is_written && size <= CACHING_PAGESIZE &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
-	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
+	    m_memory_tracker.IsRegionCpuModified(vaddr, size) &&
+	    // A CPU-dirty buffer page does not rule out a newer GPU image alias.
+	    // The streaming shortcut below never calls SynchronizeBufferFromImage.
+	    // Preserve that synchronization whenever this read requests it.
+	    (!is_texel_buffer || !m_texture_cache.IsRegionRegistered(vaddr, size))) {
 		// Within one draw window the guest has no signal to rewrite the range. A copy made in this
 		// tick at most an eighth of a lap ago is nearly a lap ahead of the ring's writes, like a
 		// fresh copy, even if the draw's preparation submits the tick.
