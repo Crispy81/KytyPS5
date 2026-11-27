@@ -28,6 +28,9 @@ public:
 	void           Finish();
 	CommandBuffer& BeginCommand();
 	uint64_t       Submit(SubmitInfo submit = {});
+	// CPU-side breadcrumbs, tagged with the command buffer's submission tick.
+	void TraceGpuWork(const char* kind, uint64_t shader, uint64_t secondary,
+	                  uint64_t a, uint64_t b, uint64_t c);
 	// Deferred callbacks can observe an externally owned drain, but cannot initiate shutdown:
 	// the priority runner cannot join itself.
 	void                      Shutdown();
@@ -80,6 +83,13 @@ private:
 		uint64_t                     tick = 0;
 	};
 
+	struct GpuTraceEntry {
+		uint64_t tick, shader, secondary, a, b, c;
+		const char* kind;
+	};
+	static constexpr size_t GpuTraceCapacity = 32768;
+	void DumpGpuWork(uint64_t failed_tick, uint64_t completed_tick) const;
+
 	void BeginNext();
 	void PriorityOperationsThread(std::stop_token stop);
 	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
@@ -95,6 +105,8 @@ private:
 	std::queue<PendingOperation> m_priority_operations;
 	std::mutex                   m_operation_mutex;
 	std::condition_variable      m_operation_available;
+	std::vector<GpuTraceEntry>    m_gpu_trace = std::vector<GpuTraceEntry>(GpuTraceCapacity);
+	uint64_t                     m_gpu_trace_count = 0;
 	std::jthread                 m_priority_thread;
 	uint64_t                     m_priority_active_tick = 0; // 0 while none runs
 	OperationState               m_operation_state      = OperationState::Open;

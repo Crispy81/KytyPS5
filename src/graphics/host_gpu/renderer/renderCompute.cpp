@@ -82,6 +82,8 @@ bool RenderExecutor::TryConsumeComputeMetaClear(const ShaderComputeInputInfo& in
 				const auto base      = descriptor.Base48();
 				const auto meta_size = cache.MetaRangeSize(base);
 				if (meta_size != 0 && descriptor.GetSize() == meta_size && cache.ClearMeta(base)) {
+					m_context.GetCommandScheduler().TraceGpuWork("meta-clear", program.shader_hash, 0,
+					                                             base, meta_size, 0);
 					return true;
 				}
 			}
@@ -210,6 +212,9 @@ bool RenderExecutor::TryConsumeComputeFill(const ShaderComputeInputInfo& input,
 		// when CPU-owned, so color-clear discovery can read them without a GPU download.
 		m_context.GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear, false);
 	}
+	m_context.GetCommandScheduler().TraceGpuWork(image_clear ? "image-clear" : "buffer-fill",
+	                                             input.stage.module->info.shader_hash, 0,
+	                                             descriptor.Base48(), size, packed_clear);
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
 		LOGF("GraphicsRenderDispatchDirect: compute %s shader=0x%016" PRIx64
@@ -467,6 +472,8 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		}
 	}
 
+	m_context.GetCommandScheduler().TraceGpuWork("dispatch", program.shader_hash, mode,
+	                                             thread_group_x, thread_group_y, thread_group_z);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DISPATCH_INITIATOR_ORDERED_APPEND_ENABLE = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
@@ -546,6 +553,8 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	m_context.GetCommandScheduler().TraceGpuWork("dispatch-indirect", program.shader_hash, mode,
+	                                             args_addr, 0, 0);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);

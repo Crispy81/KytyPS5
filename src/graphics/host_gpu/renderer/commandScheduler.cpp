@@ -300,6 +300,46 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	return m_command;
 }
 
+void CommandScheduler::TraceGpuWork(const char* kind, uint64_t shader, uint64_t secondary,
+                                    uint64_t a, uint64_t b, uint64_t c) {
+	m_gpu_trace[m_gpu_trace_count % GpuTraceCapacity] =
+	    {CurrentTick(), shader, secondary, a, b, c, kind};
+	++m_gpu_trace_count;
+}
+
+void CommandScheduler::DumpGpuWork(uint64_t failed_tick, uint64_t completed_tick) const {
+	const uint64_t count = std::min<uint64_t>(m_gpu_trace_count, GpuTraceCapacity);
+	const uint64_t begin = m_gpu_trace_count - count;
+	uint64_t pending = begin;
+	while (pending < m_gpu_trace_count &&
+	       m_gpu_trace[pending % GpuTraceCapacity].tick <= completed_tick) {
+		++pending;
+	}
+	Log::WriteToConsoleAndLog(fmt::sprintf(
+	    "GPU TRACE: failed_tick=%" PRIu64 " last_known_completed=%" PRIu64
+	    " retained=%" PRIu64 " pending_records=%" PRIu64 "\n",
+	    failed_tick, completed_tick, count, m_gpu_trace_count - pending));
+	const auto emit = [this](uint64_t i) {
+		const auto& e = m_gpu_trace[i % GpuTraceCapacity];
+		Log::WriteToConsoleAndLog(fmt::sprintf(
+		    "GPU TRACE: tick=%" PRIu64 " %s shader=0x%016" PRIx64
+		    " secondary=0x%016" PRIx64 " a=0x%" PRIx64 " b=0x%" PRIx64
+		    " c=0x%" PRIx64 "\n",
+		    e.tick, e.kind, e.shader, e.secondary, e.a, e.b, e.c));
+	};
+	// Include context immediately before the last observed completion, then the first
+	// outstanding commands and the newest commands. Never flood the crash log.
+	const uint64_t first = pending - std::min<uint64_t>(pending - begin, 16);
+	const uint64_t end = std::min<uint64_t>(m_gpu_trace_count, pending + 256);
+	for (uint64_t i = first; i < end; ++i) emit(i);
+	const uint64_t tail = m_gpu_trace_count - std::min<uint64_t>(count, 64);
+	if (tail > end) {
+		Log::WriteToConsoleAndLog("GPU TRACE: intervening records omitted\n");
+	}
+	for (uint64_t i = std::max(tail, end); i < m_gpu_trace_count; ++i) emit(i);
+	Log::WriteToConsoleAndLog("GPU TRACE: end (recorded commands, not proof of execution)\n");
+}
+
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(m_command.IsInvalid());
 
@@ -336,6 +376,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
 
 	if (result != vk::Result::eSuccess) {
+		if (result == vk::Result::eErrorDeviceLost) {
+			DumpGpuWork(tick, m_master.KnownGpuTick());
+		}
 		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
 	}
 

@@ -1209,6 +1209,11 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	auto&         occlusion_queries = m_context.GetOcclusionQueries();
 	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
+	m_context.GetCommandScheduler().TraceGpuWork(
+	    mesh_task ? "mesh-task" : mesh_active ? "mesh" : draw.Name(),
+	    state.vertex_info[0].stage.module->info.shader_hash,
+	    state.ps_active ? state.ps_input_info.stage.module->info.shader_hash : 0,
+	    draw.index_count, draw.instance_count, emit.indirect.address);
 	if (mesh_task) {
 		vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
 	} else if (mesh_active) {
