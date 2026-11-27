@@ -52,6 +52,52 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
+[[nodiscard]] bool IsBc6h(vk::Format format) {
+	return format == vk::Format::eBc6HUfloatBlock || format == vk::Format::eBc6HSfloatBlock;
+}
+
+// BC6H blocks occupy 128 bits. Storage views address the encoded blocks, not decoded
+// HDR pixels. Explicitly advertise the compatible formats when a driver rejects the
+// legacy query for extended usage on the compressed base format.
+[[nodiscard]] vk::Result QueryBc6hStorage(GraphicContext& graphics,
+                                         const vk::ImageCreateInfo& create,
+                                         std::array<vk::Format, 8>& formats,
+                                         vk::ImageFormatListCreateInfo& list,
+                                         vk::ImageFormatProperties& properties) {
+	formats[0] = vk::Format::eBc6HUfloatBlock;
+	formats[1] = vk::Format::eBc6HSfloatBlock;
+	uint32_t count = 2;
+	bool storage_supported = false;
+	for (const auto format: {vk::Format::eR32G32B32A32Uint, vk::Format::eR32G32B32A32Sint,
+	                         vk::Format::eR32G32B32A32Sfloat, vk::Format::eR64G64Uint,
+	                         vk::Format::eR64G64Sint, vk::Format::eR64G64Sfloat}) {
+		const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
+		if (features & (vk::FormatFeatureFlagBits::eStorageImage |
+		                vk::FormatFeatureFlagBits::eSampledImage)) {
+			formats[count++] = format;
+			storage_supported |= static_cast<bool>(features & vk::FormatFeatureFlagBits::eStorageImage);
+		}
+	}
+	if (!storage_supported) {
+		return vk::Result::eErrorFormatNotSupported;
+	}
+	list.viewFormatCount = count;
+	list.pViewFormats = formats.data();
+	vk::PhysicalDeviceImageFormatInfo2 query {};
+	query.pNext = &list;
+	query.format = create.format;
+	query.type = create.imageType;
+	query.tiling = create.tiling;
+	query.usage = create.usage | vk::ImageUsageFlagBits::eStorage;
+	query.flags = create.flags | vk::ImageCreateFlagBits::eExtendedUsage;
+	vk::ImageFormatProperties2 result {};
+	const auto status = graphics.physical_device.getImageFormatProperties2(&query, &result);
+	if (status == vk::Result::eSuccess) {
+		properties = result.imageFormatProperties;
+	}
+	return status;
+}
+
 [[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, const ImageInfo& info) {
 	auto usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 	if (info.IsBlock()) {
@@ -63,7 +109,7 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 			                                      ImageCreateFlags(graphics, info, storage),
 			                                      nullptr) == vk::Result::eSuccess) {
 				usage = storage;
-			} else {
+			} else if (!IsBc6h(info.pixel_format)) {
 				static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 				if (!warned.test_and_set(std::memory_order_relaxed)) {
 					Log::WriteToConsoleAndLog(fmt::format(
@@ -685,9 +731,40 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(info.samples);
 
 	vk::ImageFormatProperties properties {};
-	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
-	                                      create.usage, create.flags,
-	                                      &properties) != vk::Result::eSuccess ||
+	std::array<vk::Format, 8> bc6h_formats {};
+	vk::ImageFormatListCreateInfo bc6h_list {};
+	bool explicit_storage = false;
+	if (IsBc6h(create.format) && graphics.supports_block_texel_view &&
+	    !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
+		if (QueryBc6hStorage(graphics, create, bc6h_formats, bc6h_list, properties) ==
+		        vk::Result::eSuccess &&
+		    static_cast<bool>(properties.sampleCounts & create.samples) &&
+		    create.extent.width <= properties.maxExtent.width &&
+		    create.extent.height <= properties.maxExtent.height &&
+		    create.extent.depth <= properties.maxExtent.depth &&
+		    create.mipLevels <= properties.maxMipLevels &&
+		    create.arrayLayers <= properties.maxArrayLayers) {
+			create.usage |= vk::ImageUsageFlagBits::eStorage;
+			create.flags |= vk::ImageCreateFlagBits::eExtendedUsage;
+			create.pNext = &bc6h_list;
+			explicit_storage = true;
+			static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+			if (!logged.test_and_set(std::memory_order_relaxed)) {
+				Log::WriteToConsoleAndLog("BC6H: enabled explicit compatible storage views.\n");
+			}
+		}
+	}
+	if (IsBc6h(create.format) && !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
+		static std::atomic_flag warned = ATOMIC_FLAG_INIT;
+		if (!warned.test_and_set(std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog(
+			    "BC6H: native storage views unavailable; use raw block alias transfers.\n");
+		}
+	}
+	if ((!explicit_storage &&
+	     graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+	                                       create.usage, create.flags,
+	                                       &properties) != vk::Result::eSuccess) ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
 		     "flags=0x%x samples=%u\n",

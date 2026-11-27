@@ -19,6 +19,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <cinttypes>
@@ -732,6 +733,25 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 
 namespace BcAlias {
 
+bool IsBc6h(vk::Format format) {
+	return format == vk::Format::eBc6HUfloatBlock || format == vk::Format::eBc6HSfloatBlock;
+}
+
+// A raw descriptor for the same encoded blocks must not bind a sampled-only
+// BC6H allocation as a storage image. The guest-format buffer is the bridge.
+bool NeedsRawStorage(const ImageInfo& requested, const Image& cached) {
+	return IsBc6h(cached.info.pixel_format) && !requested.IsBlock() &&
+	       !(cached.backing.usage & vk::ImageUsageFlagBits::eStorage) &&
+	       requested.data == cached.info.data &&
+	       requested.type == cached.info.type &&
+	       requested.tile_mode == cached.info.tile_mode &&
+	       requested.bytes_per_block == 16 && cached.info.bytes_per_block == 16 &&
+	       requested.samples == 1 && cached.info.samples == 1 &&
+	       requested.resources == cached.info.resources &&
+	       requested.BlockExtent() == cached.info.BlockExtent() &&
+	       requested.mip_layout == cached.info.mip_layout;
+}
+
 bool Matches(const ImageInfo& requested, const ImageInfo& cached) {
 	return requested.guest_format != cached.guest_format &&
 	       requested.IsBlock() != cached.IsBlock() &&
@@ -739,7 +759,8 @@ bool Matches(const ImageInfo& requested, const ImageInfo& cached) {
 	       requested.bytes_per_block == cached.bytes_per_block &&
 	       requested.samples == 1 && cached.samples == 1 &&
 	       (requested.data != cached.data || requested.resources != cached.resources ||
-	        requested.BlockExtent() != cached.BlockExtent()) &&
+	        requested.BlockExtent() != cached.BlockExtent() ||
+	        (IsBc6h(requested.pixel_format) && !cached.IsBlock())) &&
 	       !TextureCache::SameBacking(cached, requested, false);
 }
 
@@ -783,6 +804,18 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
                                                          ImageId merged_id, bool exact_format) {
 	auto& cached = m_slot_images[cached_id];
 	if (!cached.registered) {
+		return {merged_id};
+	}
+	if (binding == BindingType::Storage && BcAlias::NeedsRawStorage(requested, cached)) {
+		// Publish the original encoded bytes before replacing the sampled allocation.
+		BcAlias::Resolve(*this, cached_id, merged_id);
+		if (cached.registered) {
+			EXIT("BC6H: unable to preserve compressed blocks for raw storage alias\n");
+		}
+		static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+		if (!logged.test_and_set(std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog("BC6H: using raw block storage alias transfer.\n");
+		}
 		return {merged_id};
 	}
 	// PS5: image heaps keep BC images and raw block views of their layers resident together, so a
@@ -1335,7 +1368,8 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 			// Even equal-sized allocations can place different mip chains within one tail tile.
 			if (image.info.resources.levels == desc.info.resources.levels &&
-			    SameBacking(image.info, desc.info, exact_format)) {
+			    SameBacking(image.info, desc.info, exact_format) &&
+			    !(desc.type == BindingType::Storage && BcAlias::NeedsRawStorage(desc.info, image))) {
 				result = id;
 			} else if (image.SafeToDownload() &&
 			           BcAlias::Matches(desc.info, image.info)) {
