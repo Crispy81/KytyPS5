@@ -34,6 +34,9 @@ enum class Counter {
 	ColorMetadataChecks, // GPU clear-key checks of DCC/CMASK metadata.
 	BufferUploadBytes,
 	BufferDownloadBytes,
+	BufferReadbacks,
+	BufferReadbackNs,
+	ReadbackExpandedWindows,
 	BufferEvictions,
 	// Presentation.
 	FlipsRequested,
@@ -96,7 +99,9 @@ public:
 		if (m_count != Counter::Count) {
 			Add(m_count);
 		}
-		Add(m_duration, elapsed);
+		if (m_duration != Counter::Count) {
+			Add(m_duration, elapsed);
+		}
 		if (m_peak != Peak::Count) {
 			auto& peak     = Detail::g_peaks[static_cast<int>(m_peak)];
 			auto  previous = peak.load(std::memory_order_relaxed);

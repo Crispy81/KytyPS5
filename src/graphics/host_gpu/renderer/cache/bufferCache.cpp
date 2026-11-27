@@ -29,7 +29,7 @@ namespace {
 constexpr uint64_t MiB           = 1024 * 1024;
 constexpr uint64_t GdsBufferSize = 64 * 1024;
 // GPU-modified ranges come as many small scattered islands, so a readback widens to a window.
-constexpr uint64_t DownloadWindowSize = 512 * 1024;
+// See ReadbackWindow for the bounded adaptive download policy.
 
 // Merge only adjacent regions within the same source and destination buffers.
 void AppendCopy(std::vector<vk::BufferCopy>& copies, uint64_t src, uint64_t dst,
@@ -187,6 +187,10 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		return false;
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferDownloadBytes, total_size);
+	// Only synchronous fault downloads stall the caller. Async eviction is excluded.
+	Common::DebugCounters::ScopedTimer readback_timer(
+	    async ? Common::DebugCounters::Counter::Count : Common::DebugCounters::Counter::BufferReadbacks,
+	    async ? Common::DebugCounters::Counter::Count : Common::DebugCounters::Counter::BufferReadbackNs);
 
 	auto download = m_download_buffer.MapDownload(total_size, 64);
 	for (auto& copy: copies) {
@@ -316,10 +320,13 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 		if (IsRegionGpuModified(vaddr, size)) {
-			const auto start =
-			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
-			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
-			                          buffer.CpuAddress() + buffer.Size());
+			const auto base = buffer.CpuAddress();
+			auto& history = m_readback_windows[(base * 0x9e3779b97f4a7c15ull) >> 56u];
+			const auto [start, end] = history.Select(base, base + buffer.Size(), vaddr, size,
+			                                         m_scheduler.CurrentTick(), is_write);
+			if (end - start > ReadbackWindow::BaseSize && size <= ReadbackWindow::BaseSize) {
+				Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadbackExpandedWindows);
+			}
 			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
 			}

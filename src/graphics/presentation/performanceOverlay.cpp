@@ -379,6 +379,10 @@ void GpuActivityRows(const Snapshot& shown) {
 	Row("CPU waiting on GPU",
 	    Fmt("%.0f ms/s  (%.0f waits/s)", Rate(shown, Counter::GpuWaitNs) / 1e6,
 	        Rate(shown, Counter::GpuWaits)));
+	Row("Synchronous buffer readbacks",
+	    Fmt("%.0f ms/s  (%.0f/s)", Rate(shown, Counter::BufferReadbackNs) / 1e6,
+	        Rate(shown, Counter::BufferReadbacks)));
+	Row("Expanded readback windows", Fmt("%.0f/s", Rate(shown, Counter::ReadbackExpandedWindows)));
 	Row("DCC/CMASK readbacks",
 	    Fmt("%.0f ms/s  (%.0f/s)", Rate(shown, Counter::ColorMetadataReadbackNs) / 1e6,
 	        Rate(shown, Counter::ColorMetadataReadbacks)));

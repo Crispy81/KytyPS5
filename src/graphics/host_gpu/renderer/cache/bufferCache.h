@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
+#include "graphics/host_gpu/renderer/cache/readbackWindow.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <array>
@@ -170,6 +171,8 @@ private:
 	StreamBuffer                                      m_device_buffer;
 	std::array<StreamCopy, 1u << STREAM_COPY_BITS>    m_stream_copies {};
 	uint64_t                                          m_draw_window = 0;
+	// GPU-thread-owned, bounded locality history; collisions only reset prediction.
+	std::array<ReadbackWindow, 256> m_readback_windows {};
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
