@@ -410,6 +410,17 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
 	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	graphics.amd_mixed_samples_enabled = add(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
+	LOGF("Vulkan AMD mixed attachment samples: %s\n",
+	     graphics.amd_mixed_samples_enabled ? "available" : "unavailable");
+	graphics.sample_locations_enabled = add(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
+	if (graphics.sample_locations_enabled) {
+		vk::PhysicalDeviceProperties2 sample_properties {};
+		sample_properties.pNext = &graphics.sample_locations_properties;
+		physical_device.getProperties2(&sample_properties);
+	}
+	LOGF("Vulkan programmable sample locations: %s\n",
+	     graphics.sample_locations_enabled ? "available" : "unavailable");
 	add(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
 	const bool extended_dynamic_state = add(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 	if (!add(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
