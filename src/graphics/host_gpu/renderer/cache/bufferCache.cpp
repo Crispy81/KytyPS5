@@ -134,6 +134,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 	if constexpr (insert) {
 		m_buffers.emplace(buffer.CpuAddress(), id);
 		m_total_used_memory += buffer.Size();
+		if (buffer.IsSharedCache()) m_shared_reserved += buffer.Size();
 		buffer.lru_id = m_lru_cache.Insert(id, m_gc_tick);
 		std::vector<vk::DeviceAddress> addresses;
 		addresses.reserve(size_pages);
@@ -146,6 +147,8 @@ void BufferCache::ChangeRegister(BufferId id) {
 	} else {
 		m_buffers.erase(m_buffers.find(buffer.CpuAddress()));
 		m_total_used_memory -= buffer.Size();
+		if (buffer.IsSharedCache()) m_shared_reserved -= buffer.Size();
+		m_shared_candidates.erase(buffer.CpuAddress());
 		m_lru_cache.Free(buffer.lru_id);
 		m_bda_pagetable_buffer.Fill(table_offset,
 		                            size_pages * sizeof(vk::DeviceAddress), 0);
@@ -197,6 +200,36 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	    async ? Common::DebugCounters::Counter::Count : Common::DebugCounters::Counter::BufferReadbacks,
 	    async ? Common::DebugCounters::Counter::Count : Common::DebugCounters::Counter::BufferReadbackNs);
 
+	// A persistently mapped cache allocation is still distinct from guest RAM.
+	// Publish exact dirty bytes directly after making device writes host-visible;
+	// retain the staging path for asynchronous eviction and ordinary VRAM.
+	if constexpr (!async) {
+		if (buffer.IsSharedCache()) {
+			auto& command = m_scheduler.Current();
+			command.EndRendering();
+			vk::BufferMemoryBarrier barrier {};
+			barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eHostRead;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.buffer = buffer.Handle();
+			barrier.offset = 0;
+			barrier.size = buffer.Size();
+			command.Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+			    vk::PipelineStageFlagBits::eHost, {}, 0, nullptr, 1, &barrier, 0, nullptr);
+			const auto tick = m_scheduler.CurrentTick();
+			m_scheduler.Wait(tick);
+			m_scheduler.WaitPriorityOperations(tick);
+			// Invalidate only after the host dependency and completion wait.
+			buffer.Invalidate(0, buffer.Size());
+			const auto mapped = buffer.Mapped();
+			for (const auto& copy: copies) {
+				Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
+				    mapped.data() + copy.srcOffset, copy.size);
+			}
+			return true;
+		}
+	}
 	auto download = m_download_buffer.MapDownload(total_size, 64);
 	for (auto& copy: copies) {
 		copy.dstOffset += download.offset;
@@ -386,6 +419,12 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			const auto owner_size = buffer.Size();
 			if (DownloadBufferMemory<false>(buffer, start, end - start, &copied_bytes)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
+				if (!buffer.IsSharedCache() && owner_size >= SharedBufferPolicy::MinSize &&
+				    owner_size <= SharedBufferPolicy::MaxSize) {
+					auto& candidate = m_shared_candidates[base];
+					if (candidate.size != owner_size) candidate = {owner_size, 0, false};
+					if (candidate.faults < UINT32_MAX) ++candidate.faults;
+				}
 				RecordReadback(base, owner_size, vaddr, copied_bytes, is_write);
 			}
 		}
@@ -771,7 +810,45 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionCpuModified(vaddr, size);
 }
 
+void BufferCache::PromoteHotSharedBuffer() {
+	// Run only at the existing GPU resource maintenance boundary. Replacing an
+	// owner uses the same copy, page-table update and deferred retirement as
+	// ordinary overlap merges. No descriptors in a draw are being prepared here.
+	if (!m_scheduler.Active()) return;
+	auto selected = m_shared_candidates.end();
+	for (auto it = m_shared_candidates.begin(); it != m_shared_candidates.end(); ++it) {
+		const auto& candidate = it->second;
+		if (candidate.attempted ||
+		    !SharedBufferPolicy::Eligible(candidate.size, m_shared_reserved, candidate.faults)) continue;
+		if (selected == m_shared_candidates.end() || candidate.faults > selected->second.faults)
+			selected = it;
+	}
+	if (selected == m_shared_candidates.end()) return;
+	const auto address = selected->first;
+	const auto bytes = selected->second.size;
+	selected->second.attempted = true;
+	const auto old = m_buffers.find(address);
+	if (old == m_buffers.end()) return;
+	const auto old_id = old->second;
+	auto& source = m_slot_buffers[old_id];
+	if (source.Size() != bytes || source.IsSharedCache()) return;
+	const auto new_id = m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal,
+	    address, AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, bytes, true);
+	auto& destination = m_slot_buffers[new_id];
+	if (!destination.IsSharedCache()) {
+		// Never change the existing owner's placement if the optional allocation failed.
+		m_slot_buffers.erase(new_id);
+		LOGF("Unified memory: mapped allocation unavailable for addr=0x%016" PRIx64 "\n", address);
+		return;
+	}
+	JoinOverlap(new_id, old_id, true);
+	Register(new_id);
+	LOGF("Unified memory: promoted buffer addr=0x%016" PRIx64 " bytes=%" PRIu64
+	     " active-mapped=%" PRIu64 "\n", address, bytes, m_shared_reserved);
+}
+
 void BufferCache::RunGarbageCollector() {
+	PromoteHotSharedBuffer();
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();

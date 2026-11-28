@@ -59,7 +59,7 @@ constexpr vk::AccessFlags MEMORY_ACCESS =
 } // namespace
 
 Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-               uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size)
+               uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size, bool prefer_shared)
     : m_graphics(&graphics), m_scheduler(&scheduler), m_usage(usage), m_cpu_address(cpu_address),
       m_size(size) {
 	KYTY_PROFILER_FUNCTION();
@@ -80,9 +80,31 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
-	const auto        result        = static_cast<vk::Result>(vmaCreateBuffer(
-	    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
-	    &native_buffer, &m_allocation, &allocation_result));
+	auto result = vk::Result::eErrorFeatureNotPresent;
+	if (prefer_shared && usage == MemoryUsage::DeviceLocal) {
+		auto shared_info = allocation_info;
+		shared_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+		shared_info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT |
+		                     VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+		shared_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		                            VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+		shared_info.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		result = static_cast<vk::Result>(vmaCreateBuffer(
+		    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &shared_info,
+		    &native_buffer, &m_allocation, &allocation_result));
+		m_shared_cache = result == vk::Result::eSuccess && allocation_result.pMappedData != nullptr;
+		if (result == vk::Result::eSuccess && !m_shared_cache) {
+			vmaDestroyBuffer(graphics.allocator, native_buffer, m_allocation);
+			native_buffer = VK_NULL_HANDLE;
+			m_allocation = nullptr;
+			result = vk::Result::eErrorMemoryMapFailed;
+		}
+	}
+	if (!m_shared_cache) {
+		result = static_cast<vk::Result>(vmaCreateBuffer(
+		    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
+		    &native_buffer, &m_allocation, &allocation_result));
+	}
 	if (result != vk::Result::eSuccess) {
 		graphics.LogMemoryBudget();
 	}
@@ -121,7 +143,8 @@ void Buffer::Flush(uint64_t offset, uint64_t size) {
 }
 
 void Buffer::Invalidate(uint64_t offset, uint64_t size) {
-	EXIT_IF(m_usage != MemoryUsage::Download || offset > Size() || size > Size() - offset);
+	EXIT_IF((m_usage != MemoryUsage::Download && !m_shared_cache) || m_mapped.empty() ||
+	        offset > Size() || size > Size() - offset);
 	if (!IsCoherent() && size != 0) {
 		const auto result =
 		    vmaInvalidateAllocation(m_graphics->allocator, m_allocation, offset, size);

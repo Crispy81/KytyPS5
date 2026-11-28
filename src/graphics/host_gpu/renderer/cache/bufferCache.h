@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/readbackWindow.h"
+#include "graphics/host_gpu/renderer/cache/sharedBufferPolicy.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <array>
@@ -141,6 +142,7 @@ private:
 	template <bool insert>
 	void ChangeRegister(BufferId id);
 	void DeleteBuffer(BufferId id);
+	void PromoteHotSharedBuffer();
 	[[nodiscard]] bool SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t size,
 	                                     bool is_written, bool is_texel_buffer,
 	                                     bool sync_read_write_image = false);
@@ -189,6 +191,10 @@ private:
 	std::map<uint64_t, ReadbackStats> m_readback_owners;
 	std::map<uint64_t, ReadbackStats> m_readback_regions;
 	uint32_t m_readback_samples = 0;
+	// Learning is independent of whether the performance overlay is enabled.
+	struct SharedCandidate { uint64_t size = 0; uint32_t faults = 0; bool attempted = false; };
+	std::map<uint64_t, SharedCandidate> m_shared_candidates;
+	uint64_t m_shared_reserved = 0;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;

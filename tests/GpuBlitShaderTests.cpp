@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/readbackWindow.h"
+#include "graphics/host_gpu/renderer/cache/sharedBufferPolicy.h"
 #include "gpu_blit_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/image/imageCopyPolicy.h"
@@ -12,6 +13,18 @@
 #include <iterator>
 
 namespace {
+
+TEST(SharedBufferPlacement, BoundedAndLearned) {
+	using Libs::Graphics::SharedBufferPolicy;
+	using P = SharedBufferPolicy;
+	EXPECT_FALSE(P::Eligible(24 * P::MiB, 0, 31));
+	EXPECT_TRUE(P::Eligible(24 * P::MiB, 0, 32));
+	EXPECT_TRUE(P::Eligible(32 * P::MiB, 224 * P::MiB, 100));
+	EXPECT_FALSE(P::Eligible(32 * P::MiB, 240 * P::MiB, 100));
+	EXPECT_FALSE(P::Eligible(65 * P::MiB, 0, 100));
+	EXPECT_FALSE(P::Eligible(P::MiB, 0, 100));
+	EXPECT_FALSE(P::Eligible(32 * P::MiB, UINT64_MAX, 100));
+}
 
 TEST(BufferReadbackPrediction, NearbyWriteFaultsExpandWithoutDroppingRequestedBytes) {
 	using Libs::Graphics::ReadbackWindow;
