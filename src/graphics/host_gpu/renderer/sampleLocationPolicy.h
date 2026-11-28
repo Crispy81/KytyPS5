@@ -14,7 +14,7 @@ constexpr float DecodeSampleCoordinate(uint32_t nibble) noexcept {
 constexpr uint32_t PixelShadingSamples(uint32_t samples, uint32_t exponent,
                                       bool sample_qualified) noexcept {
 	if (samples <= 1) return 1;
-	if (sample_qualified || exponent >= 5) return samples;
+	if (sample_qualified || exponent >= 32) return samples;
 	const uint32_t requested = 1u << exponent;
 	return requested < samples ? requested : samples;
 }

@@ -443,7 +443,7 @@ static void AaCheck(const HW::AaSampleControl& c, const HW::AaConfig& cf) {
 	    cf.max_sample_dist != 0 || cf.msaa_exposed_samples != 0) {
 		static uint32_t log_count = 0;
 		if (log_count++ < 16) {
-			LOGF("\t warning: unsupported PS5 sample locations use native Vulkan locations: "
+			LOGF("\t guest MSAA state (pipeline reports the selected sample-location path): "
 			     "samples=%" PRIu8 ", exposed=%" PRIu8 ", max_dist=%" PRIu8 "\n",
 			     cf.msaa_num_samples, cf.msaa_exposed_samples, cf.max_sample_dist);
 		}
@@ -519,7 +519,7 @@ static void VpCheck(const HW::ScreenViewport& vp, const HW::ScanModeControl& smc
 	if (smc.msaa_enable) {
 		static uint32_t log_count = 0;
 		if (log_count++ < 16) {
-			LOGF("\t warning: unsupported PS5 MSAA raster controls use native Vulkan defaults\n");
+			LOGF("\t PS5 MSAA raster enabled; pipeline reports actual sample handling\n");
 		}
 	}
 	EXIT_NOT_IMPLEMENTED(smc.line_stipple_enable);

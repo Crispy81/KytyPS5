@@ -28,6 +28,8 @@ TEST(GuestMultisampling, PixelIterationCounts) {
 	EXPECT_EQ(PixelShadingSamples(4, 7, false), 4u);
 	EXPECT_EQ(PixelShadingSamples(4, 0, true), 4u);
 	EXPECT_EQ(PixelShadingSamples(1, 3, true), 1u);
+	EXPECT_EQ(PixelShadingSamples(64, 5, false), 32u);
+	EXPECT_EQ(PixelShadingSamples(64, 32, false), 64u);
 }
 
 TEST(VertexWindowOffset, AppliesSignedTranslationOnlyWhenEnabled) {

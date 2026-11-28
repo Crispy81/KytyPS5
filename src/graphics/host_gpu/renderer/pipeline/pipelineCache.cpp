@@ -996,6 +996,16 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 			          std::end(static_params.sample_location_words), 0u);
 		}
 	}
+	if (ctx.GetScanModeControl().msaa_enable && attachment_samples > 1) {
+		static std::atomic_uint32_t programmable_reports {0}, default_reports {0};
+		auto& reports = static_params.programmable_sample_locations ? programmable_reports : default_reports;
+		if (reports.fetch_add(1, std::memory_order_relaxed) < 8u) {
+			LOGF("MSAA: raster samples=%u pixel shading samples=%u positions=%s depth=%s\n",
+			     attachment_samples, static_params.shading_sample_count,
+			     static_params.programmable_sample_locations ? "guest-programmed" : "host-default",
+			     with_depth ? "yes" : "no");
+		}
+	}
 	static_params.alpha_to_coverage_enable = ps_active && ctx.GetShaderRegisters().AlphaToMask();
 	const bool rect_list = Prospero::IsRectList(command.GetUserConfig().GetPrimType());
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
