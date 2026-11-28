@@ -25,6 +25,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -410,6 +411,51 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
 	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	graphics.external_host_memory_enabled = add(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+	if (graphics.external_host_memory_enabled) {
+		vk::PhysicalDeviceExternalMemoryHostPropertiesEXT host {};
+		vk::PhysicalDeviceProperties2 props {};
+		props.pNext = &host;
+		physical_device.getProperties2(&props);
+		graphics.external_host_pointer_alignment = host.minImportedHostPointerAlignment;
+		vk::PhysicalDeviceExternalBufferInfo request {};
+		request.handleType = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT;
+		request.usage = vk::BufferUsageFlagBits::eTransferSrc |
+		                vk::BufferUsageFlagBits::eTransferDst |
+		                vk::BufferUsageFlagBits::eUniformBuffer |
+		                vk::BufferUsageFlagBits::eStorageBuffer |
+		                vk::BufferUsageFlagBits::eIndexBuffer |
+		                vk::BufferUsageFlagBits::eVertexBuffer |
+		                vk::BufferUsageFlagBits::eIndirectBuffer |
+		                vk::BufferUsageFlagBits::eShaderDeviceAddress;
+		vk::ExternalBufferProperties external {};
+		physical_device.getExternalBufferProperties(&request, &external);
+		const auto& capabilities = external.externalMemoryProperties;
+		graphics.external_host_buffer_importable = static_cast<bool>(
+		    capabilities.externalMemoryFeatures & vk::ExternalMemoryFeatureFlagBits::eImportable) &&
+		    static_cast<bool>(capabilities.compatibleHandleTypes & request.handleType);
+		LOGF("Unified memory: host import extension=yes buffer importable=%s alignment=%" PRIu64
+		     " dedicated-only=%s\n",
+		     graphics.external_host_buffer_importable ? "yes" : "no",
+		     static_cast<uint64_t>(graphics.external_host_pointer_alignment),
+		     (capabilities.externalMemoryFeatures & vk::ExternalMemoryFeatureFlagBits::eDedicatedOnly)
+		         ? "yes" : "no");
+	} else {
+		LOGF("Unified memory: host import extension=no\n");
+	}
+	// Enumerate memory types rather than assuming BAR/host-visible memory is cached.
+	const auto& memory = graphics.physical_device_memory_properties;
+	for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+		const auto& type = memory.memoryTypes[i];
+		const auto flags = type.propertyFlags;
+		LOGF("Unified memory type %u: heap=%u heap-size=%" PRIu64
+		     " device-local=%d host-visible=%d coherent=%d cached=%d\n",
+		     i, type.heapIndex, static_cast<uint64_t>(memory.memoryHeaps[type.heapIndex].size),
+		     static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eDeviceLocal),
+		     static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostVisible),
+		     static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostCoherent),
+		     static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostCached));
+	}
 	graphics.amd_mixed_samples_enabled = add(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
 	LOGF("Vulkan AMD mixed attachment samples: %s\n",
 	     graphics.amd_mixed_samples_enabled ? "available" : "unavailable");

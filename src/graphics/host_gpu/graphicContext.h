@@ -28,6 +28,11 @@ struct GraphicContext {
 	vk::Device                         device                                = nullptr;
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
+	// Capability only: imported guest allocations are not used until their
+	// backing lifetime, aliasing and synchronization contracts are implemented.
+	bool external_host_memory_enabled = false;
+	bool external_host_buffer_importable = false;
+	vk::DeviceSize external_host_pointer_alignment = 0;
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               shader_image_int64_atomics_enabled    = false;
 	bool                               attachment_feedback_loop_enabled      = false;
