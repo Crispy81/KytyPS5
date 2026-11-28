@@ -1140,6 +1140,14 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		EXIT_IF((args_buffer.second & 3u) != 0);
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	if (m_targets.depth.image_id) {
+		auto& depth_image = m_context.GetTextureCache().GetImage(m_targets.depth.image_id);
+		if (depth_image.HasProgrammableDepthSamples() &&
+		    depth_image.DepthSampleWords() != pipeline.depth_sample_words) {
+			// A changed pattern needs a fresh depth load/clear, not an already open pass.
+			buffer.EndRendering();
+		}
+	}
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
 	                                            m_targets.depth, feedback_aspects, stages);
@@ -1243,6 +1251,11 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		                       emit.indirect.count, emit.indirect.stride);
 	}
 	occlusion_queries.End(vk_buffer, occlusion_query);
+	if (m_targets.depth.image_id) {
+		// Record the new pattern after all old-layout barriers and the draw.
+		m_context.GetTextureCache().GetImage(m_targets.depth.image_id)
+		    .SetDepthSampleWords(pipeline.depth_sample_words);
+	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DrawInstances, draw.instance_count);
 

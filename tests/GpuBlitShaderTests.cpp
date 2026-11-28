@@ -32,6 +32,26 @@ TEST(BlockCompressedImages, PartialBlocksHaveNonzeroExtent) {
 	EXPECT_EQ(info.BlockExtent().height, 1u);
 }
 
+TEST(GuestMultisampling, DepthPatternChangesRequireDiscard) {
+	using namespace Libs::Graphics;
+	SampleLocationWords standard {};
+	SampleLocationWords custom {};
+	custom[0] = 0x12345678u;
+	EXPECT_EQ(SelectDepthSampleWords(standard, custom, false), standard);
+	EXPECT_EQ(SelectDepthSampleWords(standard, custom, true), custom);
+	EXPECT_EQ(SelectDepthSampleWords(custom, standard, false), custom);
+	EXPECT_EQ(SelectDepthSampleWords(custom, standard, true), standard);
+	constexpr auto word = StandardFourSampleWord;
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word), 0.375f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 4), 0.125f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 8), 0.875f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 12), 0.375f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 16), 0.125f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 20), 0.625f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 24), 0.625f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(word >> 28), 0.875f);
+}
+
 TEST(GuestMultisampling, SignedSampleCoordinates) {
 	using Libs::Graphics::DecodeSampleCoordinate;
 	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(0), 0.5f);

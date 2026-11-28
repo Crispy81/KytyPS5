@@ -6,6 +6,7 @@
 #include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 
 #include <atomic>
 #include <compare>
@@ -59,6 +60,13 @@ public:
 	                                   std::optional<ImageSubresourceRange> range);
 	void Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
 	             std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer);
+	[[nodiscard]] bool HasProgrammableDepthSamples() const noexcept {
+		return static_cast<bool>(backing.flags & vk::ImageCreateFlagBits::eSampleLocationsCompatibleDepthEXT);
+	}
+	[[nodiscard]] const SampleLocationWords& DepthSampleWords() const noexcept {
+		return m_depth_sample_words;
+	}
+	void SetDepthSampleWords(const SampleLocationWords& words) noexcept;
 	void Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
 	            uint64_t size);
 	void Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
@@ -167,6 +175,11 @@ private:
 	[[nodiscard]] static std::pair<uint32_t, uint32_t>
 	SanitizeCopyLayers(const Image& source, const Image& destination, uint32_t depth);
 
+	// Single-subresource four-sample depth images only. Pointer targets remain
+	// alive for the lifetime of the Image, including deferred barriers.
+	SampleLocationWords m_depth_sample_words {};
+	std::array<vk::SampleLocationEXT, 16> m_depth_sample_points {};
+	vk::SampleLocationsInfoEXT m_depth_sample_info {};
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;
 	uint64_t          m_maybe_cpu_hash  = 0;

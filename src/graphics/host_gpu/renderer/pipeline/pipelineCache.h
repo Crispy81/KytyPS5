@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/rectListShader.h"
@@ -208,6 +209,7 @@ public:
 		vk::ShaderStageFlags    push_stages;
 		bool                    uses_push_descriptors = false;
 		bool                    uses_image_heap       = false;
+		SampleLocationWords     depth_sample_words {};
 	};
 
 	// Reads the shaders and registers bound in `command` into the state's shader stages.

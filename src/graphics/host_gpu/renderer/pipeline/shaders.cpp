@@ -205,6 +205,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const auto& rendering     = key.rendering;
 	const auto& vertex_input  = key.vertex_input;
 	const auto& static_params = key.static_params;
+	std::copy(std::begin(static_params.sample_location_words),
+	          std::end(static_params.sample_location_words), pipeline.depth_sample_words.begin());
 	const auto& vertex        = *stages[0];
 	const auto* pixel         = stages[3];
 	const bool  with_depth    = rendering.depth_format != vk::Format::eUndefined ||

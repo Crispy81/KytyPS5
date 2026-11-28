@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <array>
 #include <span>
 #include <bit>
 
@@ -34,6 +35,15 @@ constexpr bool CanPreserveMixedSamples(bool supported, uint32_t raster, uint32_t
 		if (samples != colors.front()) return false;
 	}
 	return true;
+}
+
+// Four-sample Vulkan standard pattern, encoded as signed guest 4-bit offsets.
+inline constexpr uint32_t StandardFourSampleWord = 0x62'2a'e6'aeu;
+using SampleLocationWords = std::array<uint32_t, 16>;
+
+constexpr SampleLocationWords SelectDepthSampleWords(const SampleLocationWords& previous,
+    const SampleLocationWords& requested, bool can_discard_depth) noexcept {
+	return can_discard_depth ? requested : previous;
 }
 
 } // namespace Libs::Graphics

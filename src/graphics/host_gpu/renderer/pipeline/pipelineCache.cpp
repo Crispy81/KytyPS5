@@ -971,12 +971,16 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 	    : 1u;
 	static_params.sample_shading_enable = ps_active && attachment_samples > 1 &&
 	                                      static_params.shading_sample_count > 1;
-	// Depth sample positions must also be tracked across image layout transitions.
-	// Until that ownership is implemented, only color-only rendering uses this path.
+	// Only opt depth images into programmable positions if their barriers retain
+	// the exact sample state. Multi-subresource depth images stay on the old path.
+	auto& texture_cache = command.GetContext().GetTextureCache();
+	auto* depth_image = with_depth ? &texture_cache.GetImage(depth.image_id) : nullptr;
+	const bool programmable_depth = depth_image && depth_image->HasProgrammableDepthSamples();
 	const auto& sample_props = m_graphics.sample_locations_properties;
 	const auto& aa = ctx.GetAaSampleControl();
 	if (m_graphics.sample_locations_enabled && sample_props.variableSampleLocations &&
-	    !with_depth && color_count != 0 && ctx.GetScanModeControl().msaa_enable &&
+	    (programmable_depth || (!with_depth && color_count != 0)) &&
+	    ctx.GetScanModeControl().msaa_enable &&
 	    attachment_samples > 1 && attachment_samples <= 16 &&
 	    attachment_samples == render_sample_count(ctx.GetAaConfig().msaa_num_samples) &&
 	    (sample_props.sampleLocationSampleCounts & vulkan_sample_count(attachment_samples)) &&
@@ -1004,6 +1008,30 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 			std::fill(std::begin(static_params.sample_location_words),
 			          std::end(static_params.sample_location_words), 0u);
 		}
+	}
+	if (programmable_depth) {
+		SampleLocationWords requested {};
+		std::copy(std::begin(static_params.sample_location_words),
+		          std::end(static_params.sample_location_words), requested.begin());
+		const auto& view = depth.desc.view_info;
+		const bool full_view = view.base_layer == 0 && view.base_level == 0 &&
+		                       view.layer_count == 1 && view.level_count == 1;
+		const bool full_area = std::all_of(colors, colors + color_count, [&](const auto& color) {
+			const auto extent = color.Extent();
+			return extent.width >= depth_image->info.extent.width &&
+			       extent.height >= depth_image->info.extent.height;
+		});
+		const auto& metadata = depth.desc.info.metadata;
+		const bool pending_clear = depth.depth_clear_enable ||
+		    (metadata.kind == ImageMetadataKind::Htile &&
+		     (view.aspect & vk::ImageAspectFlagBits::eDepth) &&
+		     texture_cache.IsMetaCleared(metadata.range.address, view.base_layer));
+		const bool can_discard = depth_image->backing.state.layout == vk::ImageLayout::eUndefined ||
+		    (full_view && full_area && pending_clear);
+		const auto selected = SelectDepthSampleWords(depth_image->DepthSampleWords(), requested, can_discard);
+		std::copy(selected.begin(), selected.end(), std::begin(static_params.sample_location_words));
+		static_params.programmable_sample_locations =
+		    std::ranges::any_of(selected, [](uint32_t word) { return word != 0; }) ? 1u : 0u;
 	}
 	if (ctx.GetScanModeControl().msaa_enable && attachment_samples > 1) {
 		static std::atomic_uint32_t programmable_reports {0}, default_reports {0};

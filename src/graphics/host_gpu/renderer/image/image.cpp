@@ -246,6 +246,15 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 		barriers.push_back(barrier);
 	}
 
+	if (HasProgrammableDepthSamples()) {
+		for (auto& barrier: barriers) {
+			if (barrier.oldLayout != vk::ImageLayout::eUndefined &&
+			    barrier.oldLayout != barrier.newLayout) {
+				barrier.pNext = &m_depth_sample_info;
+			}
+		}
+	}
+
 	// Resident heaps sample their images in the read state; only leaving it invalidates them.
 	if (std::ranges::any_of(barriers, [&](const vk::ImageMemoryBarrier2& barrier) {
 		    return barrier.oldLayout == ReadLayout() &&
@@ -734,6 +743,30 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(info.samples);
 
 	vk::ImageFormatProperties properties {};
+	// Restrict the initial implementation to a single depth subresource: the
+	// stored pattern is then sufficient for every image layout transition.
+	const auto& sample_props = graphics.sample_locations_properties;
+	if (info.samples == 4 && create.mipLevels == 1 && create.arrayLayers == 1 &&
+	    (ImageAspectMask(create.format) & vk::ImageAspectFlagBits::eDepth) &&
+	    graphics.sample_locations_enabled && sample_props.variableSampleLocations &&
+	    graphics.GetPhysicalDeviceProperties().limits.standardSampleLocations &&
+	    (sample_props.sampleLocationSampleCounts & vk::SampleCountFlagBits::e4) &&
+	    sample_props.sampleLocationSubPixelBits >= 4 &&
+	    sample_props.sampleLocationCoordinateRange[0] <= 0.0f &&
+	    sample_props.sampleLocationCoordinateRange[1] >= 15.0f / 16.0f) {
+		vk::MultisamplePropertiesEXT grid {};
+		graphics.physical_device.getMultisamplePropertiesEXT(create.samples, &grid);
+		const auto flags = create.flags | vk::ImageCreateFlagBits::eSampleLocationsCompatibleDepthEXT;
+		vk::ImageFormatProperties depth_properties {};
+		if (grid.maxSampleLocationGridSize.width >= 2 && grid.maxSampleLocationGridSize.height >= 2 &&
+		    grid.maxSampleLocationGridSize.width % 2 == 0 &&
+		    grid.maxSampleLocationGridSize.height % 2 == 0 &&
+		    graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+		        create.usage, flags, &depth_properties) == vk::Result::eSuccess &&
+		    (depth_properties.sampleCounts & create.samples)) {
+			create.flags = flags;
+		}
+	}
 	std::array<vk::Format, 32> bc_formats {};
 	vk::ImageFormatListCreateInfo bc_list {};
 	bool explicit_storage = false;
@@ -787,12 +820,34 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		     create.extent.width, create.extent.height, create.extent.depth,
 		     static_cast<int>(create.format), create.arrayLayers, create.mipLevels);
 	}
+	if (HasProgrammableDepthSamples()) {
+		SetDepthSampleWords({});
+	}
 	SetVulkanObjectNameF(
 	    graphics.device, backing.image,
 	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} format={} mips={} layers={} samples={}]",
 	    info.data.address, info.data.size, info.extent.width, info.extent.height, info.extent.depth,
 	    static_cast<uint32_t>(info.pixel_format), info.resources.levels, info.resources.layers,
 	    info.samples);
+}
+
+void Image::SetDepthSampleWords(const SampleLocationWords& words) noexcept {
+	if (!HasProgrammableDepthSamples()) return;
+	m_depth_sample_words = words;
+	const bool custom = std::ranges::any_of(words, [](uint32_t word) { return word != 0; });
+	const uint32_t pixels = custom ? 4u : 1u;
+	for (uint32_t pixel = 0; pixel < pixels; ++pixel) {
+		const auto word = custom ? words[pixel * 4u] : StandardFourSampleWord;
+		for (uint32_t sample = 0; sample < 4; ++sample) {
+			const auto packed = word >> (sample * 8u);
+			m_depth_sample_points[pixel * 4u + sample] = vk::SampleLocationEXT {
+			    DecodeSampleCoordinate(packed), DecodeSampleCoordinate(packed >> 4u)};
+		}
+	}
+	m_depth_sample_info.sampleLocationsPerPixel = vk::SampleCountFlagBits::e4;
+	m_depth_sample_info.sampleLocationGridSize = vk::Extent2D {custom ? 2u : 1u, custom ? 2u : 1u};
+	m_depth_sample_info.sampleLocationsCount = pixels * 4u;
+	m_depth_sample_info.pSampleLocations = m_depth_sample_points.data();
 }
 
 uint64_t Image::HashGuestEdges() const {
