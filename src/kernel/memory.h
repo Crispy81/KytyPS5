@@ -137,6 +137,14 @@ int RemapIntoPrtMemory(uint64_t prt_vaddr, uint64_t old_vaddr, size_t size, int 
 int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
+// Snapshot of a contiguous range in the shared backing store. The generation
+// invalidates snapshots after any backing mapping change; it is not a pin.
+struct BackingIdentity {
+	uint64_t offset = 0;
+	uint64_t size = 0;
+	uint64_t mapping_generation = 0;
+};
+[[nodiscard]] bool QueryBackingIdentity(uint64_t vaddr, uint64_t size, BackingIdentity& out);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 // The GPU thread reads through the backing on GPU-dirty pages when no image write-back is pending.
 // A buffer readback is needed only for GPU-written bytes in the requested range.

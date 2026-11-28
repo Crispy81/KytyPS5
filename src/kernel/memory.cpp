@@ -806,6 +806,12 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadBacking(vaddr, data, size);
 }
 
+bool QueryBackingIdentity(uint64_t vaddr, uint64_t size, BackingIdentity& out) {
+	out = {};
+	return g_guest_address_space != nullptr &&
+	       g_guest_address_space->QueryBackingIdentity(vaddr, size, out);
+}
+
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread()) {

@@ -2173,6 +2173,15 @@ void TestDirectMapQueryOffsetAndPartialMunmap() {
 	        "KernelMapNamedDirectMemory(alias)");
 	const auto alias_base = reinterpret_cast<uint64_t>(alias);
 
+	Libs::LibKernel::Memory::BackingIdentity identity {}, alias_identity {};
+	Check(test, Libs::LibKernel::Memory::QueryBackingIdentity(base, SceKernelPageSize, identity),
+	      "query physical backing identity");
+	Check(test, Libs::LibKernel::Memory::QueryBackingIdentity(alias_base, SceKernelPageSize, alias_identity),
+	      "query aliased backing identity");
+	Check(test, identity.offset == alias_identity.offset &&
+	            identity.mapping_generation == alias_identity.mapping_generation &&
+	            identity.size == alias_identity.size,
+	      "aliases must identify the same physical range");
 	constexpr uint64_t alias_test_value = 0x4b595459444d454dull; // "KYTYDMEM"
 	*reinterpret_cast<uint64_t*>(base)  = alias_test_value;
 	Check(test, *reinterpret_cast<const uint64_t*>(alias_base) == alias_test_value,

@@ -133,6 +133,23 @@ public:
 		    [](uint64_t, uint64_t) {});
 	}
 
+	// Caller holds the state lock, so all pages belong to a consistent mapping.
+	bool QueryBackingIdentity(uint64_t vaddr, uint64_t size, BackingIdentity& out) const {
+		out = {};
+		if (size == 0 || UINT64_MAX - vaddr < size) return false;
+		bool contiguous = false;
+		uint64_t physical = 0;
+		ForEachRun(vaddr, size, [&](uint64_t offset, uint64_t start, uint64_t bytes) {
+			if (start == vaddr && bytes == size) {
+				physical = offset;
+				contiguous = true;
+			}
+		}, [](uint64_t, uint64_t) {});
+		if (!contiguous) return false;
+		out = {physical, size, m_mapping_generation};
+		return true;
+	}
+
 	// Needs no lock: page entries are atomic and buckets live as long as the store.
 	[[nodiscard]] bool IsBacked(uint64_t vaddr, uint64_t size) const {
 		if (size == 0 || UINT64_MAX - vaddr < size) {
@@ -271,6 +288,7 @@ private:
 			}
 			entries[page % BucketPages].store(entry, std::memory_order_relaxed);
 		}
+		++m_mapping_generation;
 	}
 
 	void ClearPages(uint64_t vaddr, uint64_t size) {
@@ -278,6 +296,7 @@ private:
 			m_pages[page / BucketPages].load(std::memory_order_relaxed)[page % BucketPages].store(
 			    0, std::memory_order_relaxed);
 		}
+		++m_mapping_generation;
 	}
 
 	static void SetFailure(FailureReason* out, FailureReason reason) {
@@ -440,6 +459,7 @@ private:
 
 	uint8_t*                                                     m_backing_base = nullptr;
 	uint64_t                                                     m_size         = 0;
+	uint64_t                                                     m_mapping_generation = 1;
 	std::array<std::atomic<std::atomic<uint32_t>*>, BucketCount> m_pages {};
 };
 
@@ -541,6 +561,11 @@ public:
 
 	[[nodiscard]] bool IsBacked(uint64_t vaddr, uint64_t size) const {
 		return m_backing->IsBacked(vaddr, size);
+	}
+
+	bool QueryBackingIdentity(uint64_t vaddr, uint64_t size, BackingIdentity& out) const {
+		std::shared_lock state(g_memory_state_mutex);
+		return m_backing->QueryBackingIdentity(vaddr, size, out);
 	}
 
 	template <bool copy_private>
