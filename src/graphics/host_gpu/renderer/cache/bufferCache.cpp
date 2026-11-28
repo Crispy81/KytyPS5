@@ -167,7 +167,8 @@ void BufferCache::DeleteBuffer(BufferId id) {
 }
 
 template <bool async>
-bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size) {
+bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size,
+                                       uint64_t* copied_bytes) {
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size     = 0;
 	const auto                  buffer_address = buffer.CpuAddress();
@@ -185,6 +186,10 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	    });
 	if (copies.empty()) {
 		return false;
+	}
+	if (copied_bytes != nullptr) {
+		*copied_bytes = 0;
+		for (const auto& copy: copies) *copied_bytes += copy.size;
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferDownloadBytes, total_size);
 	// Only synchronous fault downloads stall the caller. Async eviction is excluded.
@@ -308,6 +313,56 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	QueueBdaSync(vaddr, size);
 }
 
+void BufferCache::RecordReadback(uint64_t owner, uint64_t owner_size, uint64_t address,
+                                 uint64_t copied_bytes, bool is_write) {
+	if (!Common::DebugCounters::Enabled()) {
+		if (m_readback_samples != 0) {
+			m_readback_owners.clear();
+			m_readback_regions.clear();
+			m_readback_samples = 0;
+		}
+		return;
+	}
+	const auto update = [&](ReadbackStats& stats) {
+		if (is_write) ++stats.writes; else ++stats.reads;
+		stats.bytes += copied_bytes;
+	};
+	auto& owner_stats = m_readback_owners[owner];
+	owner_stats.owner_size = std::max(owner_stats.owner_size, owner_size);
+	update(owner_stats);
+	update(m_readback_regions[address & ~(ReadbackWindow::MaxSize - 1)]);
+	if (++m_readback_samples < 2048) return;
+	uint64_t reads = 0, writes = 0, bytes = 0;
+	for (const auto& [base, stats]: m_readback_owners) {
+		(void)base;
+		reads += stats.reads;
+		writes += stats.writes;
+		bytes += stats.bytes;
+	}
+	LOGF("Readback profile: reads=%" PRIu64 " writes=%" PRIu64
+	     " bytes=%" PRIu64 " owners=%zu regions=%zu\n",
+	     reads, writes, bytes, m_readback_owners.size(), m_readback_regions.size());
+	const auto report = [](const auto& entries, const char* kind) {
+		std::vector<std::pair<uint64_t, ReadbackStats>> sorted(entries.begin(), entries.end());
+		const auto count = std::min<size_t>(8, sorted.size());
+		std::partial_sort(sorted.begin(), sorted.begin() + count, sorted.end(),
+		    [](const auto& a, const auto& b) {
+			    return a.second.reads + a.second.writes > b.second.reads + b.second.writes;
+		    });
+		for (size_t i = 0; i < count; ++i) {
+			const auto& [base, stats] = sorted[i];
+			LOGF("Readback hot %s: addr=0x%016" PRIx64 " size=0x%" PRIx64
+			     " reads=%" PRIu64 " writes=%" PRIu64 " bytes=%" PRIu64 "\n",
+			     kind, base, stats.owner_size, stats.reads, stats.writes, stats.bytes);
+		}
+	};
+	report(m_readback_owners, "owner");
+	report(m_readback_regions, "region");
+	m_readback_owners.clear();
+	m_readback_regions.clear();
+	m_readback_samples = 0;
+}
+
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
@@ -327,8 +382,11 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			if (end - start > ReadbackWindow::BaseSize && size <= ReadbackWindow::BaseSize) {
 				Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadbackExpandedWindows);
 			}
-			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
+			uint64_t copied_bytes = 0;
+			const auto owner_size = buffer.Size();
+			if (DownloadBufferMemory<false>(buffer, start, end - start, &copied_bytes)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
+				RecordReadback(base, owner_size, vaddr, copied_bytes, is_write);
 			}
 		}
 		if (is_write) {

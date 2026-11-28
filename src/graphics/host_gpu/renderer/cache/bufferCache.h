@@ -150,7 +150,10 @@ private:
 	                                             bool exact_range_only = false);
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
 	template <bool async>
-	[[nodiscard]] bool DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size);
+	[[nodiscard]] bool DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size,
+	                                        uint64_t* copied_bytes = nullptr);
+	void RecordReadback(uint64_t owner, uint64_t owner_size, uint64_t address,
+	                    uint64_t copied_bytes, bool is_write);
 	void               ForgetColorMetadataChecks(uint64_t vaddr, uint64_t size);
 
 	GraphicContext&                                   m_graphics;
@@ -176,6 +179,16 @@ private:
 	uint64_t                                          m_draw_window = 0;
 	// GPU-thread-owned, bounded locality history; collisions only reset prediction.
 	std::array<ReadbackWindow, 256> m_readback_windows {};
+	// GPU-thread-only, bounded to one reporting batch; active with the performance overlay.
+	struct ReadbackStats {
+		uint64_t reads = 0;
+		uint64_t writes = 0;
+		uint64_t bytes = 0;
+		uint64_t owner_size = 0;
+	};
+	std::map<uint64_t, ReadbackStats> m_readback_owners;
+	std::map<uint64_t, ReadbackStats> m_readback_regions;
+	uint32_t m_readback_samples = 0;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
