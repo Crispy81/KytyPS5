@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 #include "graphics/host_gpu/renderer/render.h"
 
+#include <array>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -28,6 +29,9 @@ public:
 	void           Finish();
 	CommandBuffer& BeginCommand();
 	uint64_t       Submit(SubmitInfo submit = {});
+	// CPU-side recording history, not proof that the GPU executed the operation.
+	void RecordGpuWork(const char* kind, const std::array<uint64_t, 4>& shaders,
+	                   uint32_t x, uint32_t y, uint32_t z, uint64_t address = 0);
 	// Deferred callbacks can observe an externally owned drain, but cannot initiate shutdown:
 	// the priority runner cannot join itself.
 	void                      Shutdown();
@@ -80,6 +84,17 @@ private:
 		uint64_t                     tick = 0;
 	};
 
+	struct GpuWork {
+		uint64_t tick = 0;
+		const char* kind = nullptr;
+		std::array<uint64_t, 4> shaders {};
+		uint32_t x = 0, y = 0, z = 0;
+		uint64_t address = 0;
+	};
+	static constexpr size_t GpuHistorySize = 8192;
+	std::vector<GpuWork> m_gpu_history = std::vector<GpuWork>(GpuHistorySize);
+	uint64_t m_gpu_work_count = 0;
+	void DumpGpuWork(uint64_t failed_tick);
 	void BeginNext();
 	void PriorityOperationsThread(std::stop_token stop);
 	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
