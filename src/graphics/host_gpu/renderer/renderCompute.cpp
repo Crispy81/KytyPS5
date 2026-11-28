@@ -237,6 +237,17 @@ void RenderExecutor::CacheDmaBases(const ShaderStageRuntime& stage) {
 		if (base == 0 || base > UINT64_MAX - 2 * BufferCache::CACHING_PAGESIZE) {
 			return;
 		}
+		// A 64 KiB guest mapping often contains four 16 KiB BDA cache pages.
+		// Prefer one contiguous allocation, avoiding several page-table updates.
+		constexpr uint64_t window = 4 * BufferCache::CACHING_PAGESIZE;
+		const uint64_t aligned = base & ~(window - 1u);
+		if (m_context.IsMapped(aligned, window)) {
+			(void)m_context.GetBufferCache().FindBuffer(aligned, window);
+			// Preserve the old forward reach when the base is near the window end.
+			if (base - aligned <= window - 3 * BufferCache::CACHING_PAGESIZE) {
+				return;
+			}
+		}
 		for (uint64_t index = 0; index <= 2; ++index) {
 			const auto page = base + index * BufferCache::CACHING_PAGESIZE;
 			if (m_context.IsMapped(page, 1)) {

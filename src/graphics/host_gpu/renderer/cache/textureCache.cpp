@@ -564,7 +564,7 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	const bool direct_copy =
 	    source.info.GetColorTransform() == destination.info.GetColorTransform() &&
 	    (source.backing.format == destination.backing.format ||
-	     (!source_depth && !dest_depth &&
+	     (!source_depth && !dest_depth && source.info.IsBlock() == destination.info.IsBlock() &&
 	      vk::blockSize(source.backing.format) == vk::blockSize(destination.backing.format)) ||
 	     (m_graphics.maintenance8_enabled && source_depth != dest_depth &&
 	      source.backing.image_type == destination.backing.image_type &&

@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/imageCopyPolicy.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
@@ -518,10 +519,12 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 	                                        : info.bytes_per_block;
 	const uint32_t source_block      = source.info.IsBlock() ? 4u : 1u;
 	const uint32_t destination_block = info.IsBlock() ? 4u : 1u;
-	EXIT_IF(levels == 0 || source_bytes == 0 || source_bytes != destination_bytes ||
-	        source_block != destination_block);
+	EXIT_IF(levels == 0 || source_bytes == 0 || source_bytes != destination_bytes);
 	const auto source_transform = source.info.GetColorTransform();
 	const auto target_transform = info.GetColorTransform();
+	// Cross-block copies transfer the encoded bytes without channel conversion.
+	EXIT_IF(source_block != destination_block &&
+	        (source_transform != ColorTransform::None || target_transform != ColorTransform::None));
 
 	vk::BufferMemoryBarrier2 barrier {};
 	barrier.srcStageMask        = vk::PipelineStageFlagBits2::eTransfer;
@@ -539,8 +542,17 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 	               command);
 	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
 	for (uint32_t level = 0; level < levels; level++) {
-		const auto width             = std::max(source.backing.extent.width >> level, 1u);
-		const auto height            = std::max(source.backing.extent.height >> level, 1u);
+		const auto source_width = std::max(source.backing.extent.width >> level, 1u);
+		const auto source_height = std::max(source.backing.extent.height >> level, 1u);
+		const auto destination_width = std::max(backing.extent.width >> level, 1u);
+		const auto destination_height = std::max(backing.extent.height >> level, 1u);
+		const auto columns = SharedEncodedBlocks(source_width, source_block,
+		                                         destination_width, destination_block);
+		const auto block_rows = SharedEncodedBlocks(source_height, source_block,
+		                                            destination_height, destination_block);
+		const auto source_copy_width = EncodedCopyTexels(columns, source_block, source_width);
+		const auto destination_copy_width = EncodedCopyTexels(columns, destination_block,
+		                                                     destination_width);
 		const auto source_depth      = source.backing.image_type == vk::ImageType::e3D
 		                                   ? std::max(source.backing.extent.depth >> level, 1u)
 		                                   : source.backing.layers;
@@ -548,32 +560,36 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 		                                   ? std::max(backing.extent.depth >> level, 1u)
 		                                   : backing.layers;
 		const auto slices            = std::min(source_depth, destination_depth);
-		const auto block_rows        = (height + source_block - 1) / source_block;
-		const auto row_size =
-		    static_cast<uint64_t>((width + source_block - 1) / source_block) * source_bytes;
+		const auto row_size = static_cast<uint64_t>(columns) * source_bytes;
 		const auto rows_per_copy = CopyRows(row_size, block_rows, buffer.Size());
 		EXIT_IF(slices == 0 || rows_per_copy == 0);
 		for (uint32_t slice = 0; slice < slices; slice++) {
 			for (uint32_t block_row = 0; block_row < block_rows; block_row += rows_per_copy) {
 				const auto          copy_rows   = std::min(rows_per_copy, block_rows - block_row);
-				const auto          y           = block_row * source_block;
-				const auto          copy_height = std::min(copy_rows * source_block, height - y);
+				const auto source_y = block_row * source_block;
+				const auto destination_y = block_row * destination_block;
+				const auto source_copy_height = EncodedCopyTexels(copy_rows, source_block,
+				                                                  source_height - source_y);
+				const auto destination_copy_height = EncodedCopyTexels(copy_rows, destination_block,
+				                                                       destination_height - destination_y);
 				const auto          copy_size   = row_size * copy_rows;
 				vk::BufferImageCopy source_copy {};
 				source_copy.imageSubresource = {
 				    source_aspect, level,
 				    source.backing.image_type == vk::ImageType::e3D ? 0u : slice, 1};
-				source_copy.imageOffset           = {0, static_cast<int32_t>(y),
+				source_copy.imageOffset           = {0, static_cast<int32_t>(source_y),
 				                                     source.backing.image_type == vk::ImageType::e3D
 				                                         ? static_cast<int32_t>(slice)
 				                                         : 0};
-				source_copy.imageExtent           = {width, copy_height, 1};
+				source_copy.imageExtent           = {source_copy_width, source_copy_height, 1};
 				auto destination_copy             = source_copy;
 				destination_copy.imageSubresource = {
 				    destination_aspect, level,
 				    backing.image_type == vk::ImageType::e3D ? 0u : slice, 1};
+				destination_copy.imageOffset.y = static_cast<int32_t>(destination_y);
 				destination_copy.imageOffset.z =
 				    backing.image_type == vk::ImageType::e3D ? static_cast<int32_t>(slice) : 0;
+				destination_copy.imageExtent = vk::Extent3D {destination_copy_width, destination_copy_height, 1};
 				barrier.size          = copy_size;
 				barrier.srcAccessMask = vk::AccessFlagBits2::eTransferRead;
 				barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;

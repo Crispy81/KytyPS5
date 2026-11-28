@@ -1,5 +1,6 @@
 #include "gpu_blit_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/image/imageCopyPolicy.h"
 #include "graphics/host_gpu/renderer/vertexWindowOffset.h"
 #include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 
@@ -21,6 +22,19 @@ TEST(GuestMultisampling, MixedAttachmentEligibility) {
 	EXPECT_FALSE(CanPreserveMixedSamples(true, 8, 4, equal_colors));
 	EXPECT_FALSE(CanPreserveMixedSamples(true, 2, 2, equal_colors));
 	EXPECT_FALSE(CanPreserveMixedSamples(true, 1, 0, equal_colors));
+}
+
+TEST(BlockCompressedImages, CopyUsesEncodedBlockUnits) {
+	using namespace Libs::Graphics;
+	EXPECT_EQ(SharedEncodedBlocks(1920, 4, 480, 1), 480u);
+	EXPECT_EQ(SharedEncodedBlocks(480, 1, 1920, 4), 480u);
+	EXPECT_EQ(SharedEncodedBlocks(5, 4, 2, 1), 2u);
+	EXPECT_EQ(SharedEncodedBlocks(1, 4, 1, 1), 1u);
+	EXPECT_EQ(SharedEncodedBlocks(8, 4, 1, 1), 1u);
+	EXPECT_EQ(EncodedCopyTexels(2, 4, 5), 5u);
+	EXPECT_EQ(EncodedCopyTexels(1, 4, 1), 1u);
+	EXPECT_EQ(EncodedCopyTexels(1, 4, 8), 4u);
+	EXPECT_EQ(EncodedCopyTexels(2, 1, 5), 2u);
 }
 
 TEST(BlockCompressedImages, PartialBlocksHaveNonzeroExtent) {
