@@ -633,6 +633,11 @@ void SystemContentLoadParamSfo(const std::filesystem::path& file_name) {
 	sc->playgo.DbgPrint();
 }
 
+std::filesystem::path SystemContentGetAppRoot() {
+    const auto* sc = Common::Singleton<SystemContent>::Instance();
+    return sc->psf_path.parent_path().parent_path();
+}
+
 bool SystemContentIsTrinityMode() {
 	return Common::Singleton<SystemContent>::Instance()->trinity_mode;
 }
