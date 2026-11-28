@@ -2,10 +2,12 @@
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
 #include <optional>
+#include <fmt/format.h>
 
 namespace Libs::Graphics {
 
@@ -319,6 +321,49 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	return m_command;
 }
 
+void CommandScheduler::RecordGpuWork(const char* kind, const std::array<uint64_t, 4>& shaders,
+                                     uint32_t x, uint32_t y, uint32_t z, uint64_t address) {
+	m_gpu_history[m_gpu_work_count % GpuHistorySize] =
+	    {CurrentTick(), kind, shaders, x, y, z, address};
+	++m_gpu_work_count;
+}
+
+void CommandScheduler::DumpGpuWork(uint64_t failed_tick) {
+	const auto known = m_master.KnownGpuTick();
+	uint64_t counter = 0;
+	const auto result = m_graphics.device.getSemaphoreCounterValue(m_master.Handle(), &counter);
+	const auto completed = result == vk::Result::eSuccess ? std::max(known, counter) : known;
+	const auto first = m_gpu_work_count > GpuHistorySize ? m_gpu_work_count - GpuHistorySize : 0;
+	uint64_t pending = first;
+	while (pending < m_gpu_work_count &&
+	       m_gpu_history[pending % GpuHistorySize].tick <= completed) ++pending;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "GPU history: failed submit tick={} last known complete={} timeline query={} "
+	    "total recorded={} retained={} outstanding retained={}\n",
+	    failed_tick, completed, vk::to_string(result), m_gpu_work_count,
+	    m_gpu_work_count - first, m_gpu_work_count - pending));
+	// Keep the earliest retained outstanding work and the newest work. The
+	// recorded order is CPU submission order, not a GPU fault location.
+	const auto print = [&](uint64_t i) {
+		const auto& work = m_gpu_history[i % GpuHistorySize];
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GPU history: seq={} tick={} {} shaders={:016x}/{:016x}/{:016x}/{:016x} "
+		    "args={},{},{} addr=0x{:016x}\n",
+		    i, work.tick, work.kind, work.shaders[0], work.shaders[1],
+		    work.shaders[2], work.shaders[3], work.x, work.y, work.z, work.address));
+	};
+	const auto begin = pending > first + 8 ? pending - 8 : first;
+	const auto early_end = std::min(m_gpu_work_count, begin + 128);
+	for (auto i = begin; i < early_end; ++i) print(i);
+	const auto late_begin = std::max(early_end,
+	    m_gpu_work_count > 128 ? m_gpu_work_count - 128 : uint64_t{0});
+	if (late_begin > early_end) {
+		Log::WriteToConsoleAndLog(fmt::format("GPU history: {} intermediate entries omitted\n",
+		                                     late_begin - early_end));
+	}
+	for (auto i = late_begin; i < m_gpu_work_count; ++i) print(i);
+}
+
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(m_command.IsInvalid());
 
@@ -355,6 +400,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::QueueSubmits);
 
 	if (result != vk::Result::eSuccess) {
+		DumpGpuWork(tick);
 		EXIT("vkQueueSubmit failed: %s, tick=%" PRIu64 "\n", vk::to_string(result).c_str(), tick);
 	}
 
