@@ -123,7 +123,9 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	}
 	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
 	    address, size, resource.written,
-	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
+	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id,
+	    resource.read && resource.written &&
+	        (resource.formatted || Config::SyncRawImageBuffersEnabled()));
 	const auto aligned_offset = Common::AlignDown(offset, alignment);
 	const auto adjustment     = offset - aligned_offset;
 	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
@@ -884,6 +886,10 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
                                              DrawTargets&                       targets) {
 	bool uses_dma        = false;
 	bool uses_image_heap = false;
+	// Resolve guest-address pages before capturing descriptor buffer owners.
+	for (auto* stage: stages) {
+		CacheDmaBases(*stage->runtime);
+	}
 	FindBuffers(stages);
 	for (auto* stage: stages) {
 		uses_dma |= stage->runtime->module->info.info.uses_dma;
