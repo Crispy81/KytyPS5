@@ -169,6 +169,7 @@ private:
 	friend struct PipelineCacheTestAccess;
 
 	Common::File                             m_file;
+	uint64_t                                 m_written_records = 0;
 	std::mutex                               m_mutex;
 	std::condition_variable_any              m_ready;
 	std::queue<Common::UniqueFunction<void>> m_jobs;
