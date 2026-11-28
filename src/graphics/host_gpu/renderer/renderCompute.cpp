@@ -371,12 +371,33 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 
 	const auto& program   = input_info.stage.module->info;
 	const auto& resources = *input_info.stage.resources;
-	if (resources.specialization_reads.empty() &&
-	    (TryConsumeComputeMetaClear(input_info, buffer) ||
-	     TryConsumeComputeFill(input_info, buffer, thread_group_x, thread_group_y,
-	                           thread_group_z, mode))) {
-		ResetBindings();
-		return;
+	if (resources.specialization_reads.empty()) {
+		// A live, exact HTile descriptor alone is not proof that a dispatch clears
+		// it. In particular, pooled work queues can reuse the same address and
+		// size, and a partial dispatch can cover only part of that descriptor.
+		// Only elide a dispatch when the existing uniform-fill analysis proves
+		// full coverage, a supported addressing mode and disjoint input ranges.
+		ShaderBufferResource clear_descriptor;
+		uint32_t             clear_value = 0;
+		uint64_t             clear_size  = 0;
+		const bool proven_fill = ResolveComputeBufferFill(
+		    input_info, thread_group_x, thread_group_y, thread_group_z, mode,
+		    clear_descriptor, clear_value, clear_size);
+		if (proven_fill && TryConsumeComputeMetaClear(input_info, buffer)) {
+			static std::atomic<uint32_t> logged_meta_clears {0};
+			if (logged_meta_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF("GraphicsRenderDispatchDirect: proven HTile clear shader=0x%016" PRIx64
+				     " addr=0x%016" PRIx64 " size=0x%016" PRIx64 " value=0x%08" PRIx32 "\n",
+				     program.shader_hash, clear_descriptor.Base48(), clear_size, clear_value);
+			}
+			ResetBindings();
+			return;
+		}
+		if (TryConsumeComputeFill(input_info, buffer, thread_group_x, thread_group_y,
+		                          thread_group_z, mode)) {
+			ResetBindings();
+			return;
+		}
 	}
 
 	if (use_thread_dimensions) {
