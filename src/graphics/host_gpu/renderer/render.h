@@ -148,6 +148,7 @@ public:
 	void ProcessPssr(CommandBuffer& buffer, const Pssr::Request& request);
 
 	void PrepareBindings(const ShaderStageRuntime& runtime, PreparedBindings& prepared);
+	void CacheDmaBases(const ShaderStageRuntime& stage);
 	void                           FindBuffers(std::span<PreparedBindings* const> stages);
 	void                           RebindBuffers(PreparedBindings& bindings);
 	void                           RebindImages(PreparedBindings& bindings);
