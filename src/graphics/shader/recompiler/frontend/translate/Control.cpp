@@ -59,7 +59,8 @@ void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode op
 		const auto result = combine(old, ReadU32(inst.src0));
 		WriteRawU32(inst.dst, old);
 		WriteRawU32(ConditionOperand(Decoder::OperandKind::ExecLo), result);
-		ir.SetScc(ir.INotEqual(result, IR::U32(IR::Value(0u))));
+		ir.SetScc(ir.INotEqual(program.stage == ShaderType::Pixel ? ir.GetExecLo() : result,
+		                       IR::U32(IR::Value(0u))));
 		return;
 	}
 	// EXEC words combine bitwise; the per-lane EXEC combines the per-lane masks, so helper lanes
@@ -74,7 +75,8 @@ void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode op
 	WriteMask(inst.dst, old, old_mask, true);
 	WriteMask(ConditionOperand(Decoder::OperandKind::ExecLo), IR::U1(ir.Emit(operation, {lhs, rhs})),
 	          mask);
-	ir.SetScc(ir.INotEqual(ir.BitwiseOr(mask[0], mask[1]), IR::U32(IR::Value(0u))));
+	const auto stored = program.stage == ShaderType::Pixel ? ExecMask() : mask;
+	ir.SetScc(ir.INotEqual(ir.BitwiseOr(stored[0], stored[1]), IR::U32(IR::Value(0u))));
 }
 
 void Translator::ADD_U32(const Decoder::Instruction& inst, bool vector, bool use_carry_in) {
