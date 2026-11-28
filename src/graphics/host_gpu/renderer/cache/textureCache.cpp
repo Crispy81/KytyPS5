@@ -19,6 +19,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <cinttypes>
@@ -732,6 +733,24 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 
 namespace BcAlias {
 
+// A raw descriptor for the same encoded blocks must not bind a sampled-only
+// compressed allocation as a storage image. The guest-format buffer is the bridge.
+bool NeedsRawStorage(const ImageInfo& requested, const Image& cached, bool storage) {
+	return cached.info.IsBlock() && !requested.IsBlock() &&
+	       (!(cached.backing.flags & vk::ImageCreateFlagBits::eBlockTexelViewCompatible) ||
+	        (storage && !(cached.backing.usage & vk::ImageUsageFlagBits::eStorage))) &&
+	       requested.data.address == cached.info.data.address &&
+	       requested.data.size <= cached.info.data.size &&
+	       requested.type == cached.info.type &&
+	       requested.tile_mode == cached.info.tile_mode &&
+	       (requested.bytes_per_block == 8 || requested.bytes_per_block == 16) &&
+	       requested.bytes_per_block == cached.info.bytes_per_block &&
+	       requested.samples == 1 && cached.info.samples == 1 &&
+	       requested.resources.levels <= cached.info.resources.levels &&
+	       requested.resources.layers <= cached.info.resources.layers &&
+	       requested.BlockExtent() == cached.info.BlockExtent();
+}
+
 bool Matches(const ImageInfo& requested, const ImageInfo& cached) {
 	return requested.guest_format != cached.guest_format &&
 	       requested.IsBlock() != cached.IsBlock() &&
@@ -739,7 +758,8 @@ bool Matches(const ImageInfo& requested, const ImageInfo& cached) {
 	       requested.bytes_per_block == cached.bytes_per_block &&
 	       requested.samples == 1 && cached.samples == 1 &&
 	       (requested.data != cached.data || requested.resources != cached.resources ||
-	        requested.BlockExtent() != cached.BlockExtent()) &&
+	        requested.BlockExtent() != cached.BlockExtent() ||
+	        (requested.IsBlock() && !cached.IsBlock())) &&
 	       !TextureCache::SameBacking(cached, requested, false);
 }
 
@@ -751,6 +771,13 @@ bool Publish(TextureCache& cache, Image& image) {
 	auto [buffer, offset] =
 	    cache.m_buffer_cache.ObtainBuffer(image.info.data.address, image.info.data.size, true);
 	cache.DownloadImage(image, *buffer, offset, image.info.data.size, image.info.resources.levels);
+	// Report completed recording of an actual copy, not just a capability probe.
+	static std::atomic<uint32_t> published {0};
+	if (published.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF("BC alias publish: format=%u addr=0x%016" PRIx64 " size=0x%" PRIx64 "\n",
+		     static_cast<uint32_t>(image.info.pixel_format), image.info.data.address,
+		     image.info.data.size);
+	}
 	image.ClearGpuModified();
 	image.MarkBufferModified();
 	return true;
@@ -783,6 +810,20 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
                                                          ImageId merged_id, bool exact_format) {
 	auto& cached = m_slot_images[cached_id];
 	if (!cached.registered) {
+		return {merged_id};
+	}
+	if ((binding == BindingType::Storage || binding == BindingType::Texture) &&
+	    BcAlias::NeedsRawStorage(requested, cached, binding == BindingType::Storage)) {
+		// Publish the original encoded bytes before replacing the sampled allocation.
+		BcAlias::Resolve(*this, cached_id, merged_id);
+		const auto* remaining = m_slot_images.try_get(cached_id);
+		if (remaining != nullptr && remaining->registered) {
+			EXIT("BC storage: unable to preserve compressed blocks for raw storage alias\n");
+		}
+		static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+		if (!logged.test_and_set(std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog("BC storage: using raw block storage alias transfer.\n");
+		}
 		return {merged_id};
 	}
 	// PS5: image heaps keep BC images and raw block views of their layers resident together, so a
@@ -1335,7 +1376,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 			// Even equal-sized allocations can place different mip chains within one tail tile.
 			if (image.info.resources.levels == desc.info.resources.levels &&
-			    SameBacking(image.info, desc.info, exact_format)) {
+			    SameBacking(image.info, desc.info, exact_format) &&
+			    !((desc.type == BindingType::Storage || desc.type == BindingType::Texture) &&
+			      BcAlias::NeedsRawStorage(desc.info, image, desc.type == BindingType::Storage))) {
 				result = id;
 			} else if (image.SafeToDownload() &&
 			           BcAlias::Matches(desc.info, image.info)) {
