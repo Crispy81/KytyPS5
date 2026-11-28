@@ -126,7 +126,10 @@ void Translator::S_U64_MASK(const Decoder::Instruction& inst, IR::ValueOpcode lo
 			ir.SetScalarMaskTag(dst, mask_valid);
 		}
 	}
-	ir.SetScc(ir.INotEqual(ir.BitwiseOr(result[0], result[1]), IR::U32(IR::Value(0u))));
+	const auto stored = program.stage == ShaderType::Pixel &&
+	                            inst.dst.kind == Decoder::OperandKind::ExecLo
+	                        ? ExecMask() : result;
+	ir.SetScc(ir.INotEqual(ir.BitwiseOr(stored[0], stored[1]), IR::U32(IR::Value(0u))));
 }
 
 void Translator::SimpleInteger(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
