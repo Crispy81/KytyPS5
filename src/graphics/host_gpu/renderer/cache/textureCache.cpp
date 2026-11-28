@@ -745,8 +745,7 @@ bool NeedsRawStorage(const ImageInfo& requested, const Image& cached) {
 	       requested.bytes_per_block == cached.info.bytes_per_block &&
 	       requested.samples == 1 && cached.info.samples == 1 &&
 	       requested.resources == cached.info.resources &&
-	       requested.BlockExtent() == cached.info.BlockExtent() &&
-	       requested.mip_layout == cached.info.mip_layout;
+	       requested.BlockExtent() == cached.info.BlockExtent();
 }
 
 bool Matches(const ImageInfo& requested, const ImageInfo& cached) {

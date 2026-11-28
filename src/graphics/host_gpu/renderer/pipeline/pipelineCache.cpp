@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
@@ -955,8 +956,46 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 	static_params.topology                 = state.topology;
 	static_params.primitive_restart_enable = state.primitive_restart_enable;
 	static_params.samples                  = attachment_samples;
-	static_params.sample_shading_enable =
-	    ps_active && attachment_samples > 1 && ps_input_info.ps_sample_shading;
+	static_params.shading_sample_count = ps_active
+	    ? PixelShadingSamples(attachment_samples, ctx.GetEqaaControl().ps_iter_samples,
+	                          ps_input_info.ps_sample_shading)
+	    : 1u;
+	static_params.sample_shading_enable = ps_active && attachment_samples > 1 &&
+	                                      static_params.shading_sample_count > 1;
+	// Depth sample positions must also be tracked across image layout transitions.
+	// Until that ownership is implemented, only color-only rendering uses this path.
+	const auto& sample_props = m_graphics.sample_locations_properties;
+	const auto& aa = ctx.GetAaSampleControl();
+	if (m_graphics.sample_locations_enabled && sample_props.variableSampleLocations &&
+	    !with_depth && color_count != 0 && ctx.GetScanModeControl().msaa_enable &&
+	    attachment_samples > 1 && attachment_samples <= 16 &&
+	    attachment_samples == render_sample_count(ctx.GetAaConfig().msaa_num_samples) &&
+	    (sample_props.sampleLocationSampleCounts & vulkan_sample_count(attachment_samples)) &&
+	    sample_props.sampleLocationSubPixelBits >= 4 &&
+	    sample_props.sampleLocationCoordinateRange[0] <= 0.0f &&
+	    sample_props.sampleLocationCoordinateRange[1] >= 15.0f / 16.0f) {
+		vk::MultisamplePropertiesEXT grid {};
+		m_graphics.physical_device.getMultisamplePropertiesEXT(
+		    vulkan_sample_count(attachment_samples), &grid);
+		const uint32_t words_per_pixel = (attachment_samples + 3u) / 4u;
+		bool programmed = false;
+		for (uint32_t pixel = 0; pixel < 4; ++pixel) {
+			for (uint32_t word = 0; word < words_per_pixel; ++word) {
+				const auto index = pixel * 4u + word;
+				programmed |= aa.locations[index] != 0;
+				static_params.sample_location_words[index] = aa.locations[index];
+			}
+		}
+		if (programmed && grid.maxSampleLocationGridSize.width >= 2 &&
+		    grid.maxSampleLocationGridSize.height >= 2 &&
+		    grid.maxSampleLocationGridSize.width % 2 == 0 &&
+		    grid.maxSampleLocationGridSize.height % 2 == 0) {
+			static_params.programmable_sample_locations = 1;
+		} else {
+			std::fill(std::begin(static_params.sample_location_words),
+			          std::end(static_params.sample_location_words), 0u);
+		}
+	}
 	static_params.alpha_to_coverage_enable = ps_active && ctx.GetShaderRegisters().AlphaToMask();
 	const bool rect_list = Prospero::IsRectList(command.GetUserConfig().GetPrimType());
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;

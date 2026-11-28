@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -310,7 +311,28 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	vk::PipelineMultisampleStateCreateInfo multisampling {};
 	multisampling.sampleShadingEnable  = static_params.sample_shading_enable ? VK_TRUE : VK_FALSE;
 	multisampling.rasterizationSamples = vulkan_sample_count(static_params.samples);
-	multisampling.minSampleShading     = 1.0f;
+	multisampling.minSampleShading = static_cast<float>(static_params.shading_sample_count) /
+	                                 static_cast<float>(static_params.samples);
+	std::array<vk::SampleLocationEXT, 64> sample_locations {};
+	vk::PipelineSampleLocationsStateCreateInfoEXT sample_state {};
+	if (static_params.programmable_sample_locations && graphics.sample_locations_enabled &&
+	    !with_depth) {
+		const auto count = static_params.samples;
+		for (uint32_t pixel = 0; pixel < 4; ++pixel) {
+			for (uint32_t sample = 0; sample < count; ++sample) {
+				const auto word = static_params.sample_location_words[pixel * 4u + sample / 4u];
+				const auto packed = word >> ((sample % 4u) * 8u);
+				sample_locations[pixel * count + sample] = {
+				    DecodeSampleCoordinate(packed), DecodeSampleCoordinate(packed >> 4u)};
+			}
+		}
+		sample_state.sampleLocationsEnable = VK_TRUE;
+		sample_state.sampleLocationsInfo.sampleLocationsPerPixel = multisampling.rasterizationSamples;
+		sample_state.sampleLocationsInfo.sampleLocationGridSize = {2, 2};
+		sample_state.sampleLocationsInfo.sampleLocationsCount = count * 4u;
+		sample_state.sampleLocationsInfo.pSampleLocations = sample_locations.data();
+		multisampling.pNext = &sample_state;
+	}
 	multisampling.alphaToCoverageEnable =
 	    static_params.alpha_to_coverage_enable ? VK_TRUE : VK_FALSE;
 

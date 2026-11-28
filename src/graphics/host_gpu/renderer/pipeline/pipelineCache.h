@@ -60,6 +60,9 @@ struct PipelineStaticParameters {
 	bool                       primitive_restart_enable = false;
 	uint32_t                   samples                  = 1;
 	bool                       sample_shading_enable    = false;
+	uint32_t                   shading_sample_count     = 1;
+	uint32_t                   programmable_sample_locations = 0;
+	uint32_t                   sample_location_words[16] = {};
 	bool                       alpha_to_coverage_enable = false;
 	uint32_t                   color_mask[RENDER_COLOR_ATTACHMENTS_MAX]           = {};
 	bool                       provoking_vtx_last                                 = false;

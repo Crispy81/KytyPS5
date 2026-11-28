@@ -52,25 +52,36 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
-[[nodiscard]] bool IsBc6h(vk::Format format) {
-	return format == vk::Format::eBc6HUfloatBlock || format == vk::Format::eBc6HSfloatBlock;
-}
-
-// BC6H blocks occupy 128 bits. Storage views address the encoded blocks, not decoded
-// HDR pixels. Explicitly advertise the compatible formats when a driver rejects the
-// legacy query for extended usage on the compressed base format.
-[[nodiscard]] vk::Result QueryBc6hStorage(GraphicContext& graphics,
-                                         const vk::ImageCreateInfo& create,
-                                         std::array<vk::Format, 8>& formats,
-                                         vk::ImageFormatListCreateInfo& list,
-                                         vk::ImageFormatProperties& properties) {
-	formats[0] = vk::Format::eBc6HUfloatBlock;
-	formats[1] = vk::Format::eBc6HSfloatBlock;
-	uint32_t count = 2;
+// Storage views address encoded BC blocks, never decoded color pixels.
+[[nodiscard]] vk::Result QueryBcStorage(GraphicContext& graphics,
+                                       const vk::ImageCreateInfo& create,
+                                       std::array<vk::Format, 32>& formats,
+                                       vk::ImageFormatListCreateInfo& list,
+                                       vk::ImageFormatProperties& properties) {
+	formats[0] = create.format;
+	uint32_t count = 1;
 	bool storage_supported = false;
-	for (const auto format: {vk::Format::eR32G32B32A32Uint, vk::Format::eR32G32B32A32Sint,
-	                         vk::Format::eR32G32B32A32Sfloat, vk::Format::eR64G64Uint,
-	                         vk::Format::eR64G64Sint, vk::Format::eR64G64Sfloat}) {
+	for (const auto format: {
+	         vk::Format::eBc1RgbSrgbBlock, vk::Format::eBc1RgbUnormBlock,
+	         vk::Format::eBc1RgbaSrgbBlock, vk::Format::eBc1RgbaUnormBlock,
+	         vk::Format::eBc2SrgbBlock, vk::Format::eBc2UnormBlock,
+	         vk::Format::eBc3SrgbBlock, vk::Format::eBc3UnormBlock,
+	         vk::Format::eBc4SnormBlock, vk::Format::eBc4UnormBlock,
+	         vk::Format::eBc5SnormBlock, vk::Format::eBc5UnormBlock,
+	         vk::Format::eBc6HSfloatBlock, vk::Format::eBc6HUfloatBlock,
+	         vk::Format::eBc7SrgbBlock, vk::Format::eBc7UnormBlock,
+	         vk::Format::eR16G16B16A16Sfloat, vk::Format::eR16G16B16A16Sint,
+	         vk::Format::eR16G16B16A16Snorm, vk::Format::eR16G16B16A16Sscaled,
+	         vk::Format::eR16G16B16A16Uint, vk::Format::eR16G16B16A16Unorm,
+	         vk::Format::eR16G16B16A16Uscaled,
+	         vk::Format::eR32G32Sfloat, vk::Format::eR32G32Sint, vk::Format::eR32G32Uint,
+	         vk::Format::eR64Sfloat, vk::Format::eR64Sint, vk::Format::eR64Uint,
+	         vk::Format::eR32G32B32A32Uint, vk::Format::eR32G32B32A32Sint,
+	         vk::Format::eR32G32B32A32Sfloat, vk::Format::eR64G64Uint,
+	         vk::Format::eR64G64Sint, vk::Format::eR64G64Sfloat}) {
+		if (format == create.format || !ImageViewOps::FormatsCompatible(create.format, format)) {
+			continue;
+		}
 		const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
 		if (features & (vk::FormatFeatureFlagBits::eStorageImage |
 		                vk::FormatFeatureFlagBits::eSampledImage)) {
@@ -109,14 +120,6 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 			                                      ImageCreateFlags(graphics, info, storage),
 			                                      nullptr) == vk::Result::eSuccess) {
 				usage = storage;
-			} else if (!IsBc6h(info.pixel_format)) {
-				static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-				if (!warned.test_and_set(std::memory_order_relaxed)) {
-					Log::WriteToConsoleAndLog(fmt::format(
-					    "Warning: format {} does not support storage access; block-compressed "
-					    "textures written by the guest will not render.\n",
-					    vk::to_string(info.pixel_format)));
-				}
 			}
 		}
 		return usage;
@@ -731,12 +734,12 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(info.samples);
 
 	vk::ImageFormatProperties properties {};
-	std::array<vk::Format, 8> bc6h_formats {};
-	vk::ImageFormatListCreateInfo bc6h_list {};
+	std::array<vk::Format, 32> bc_formats {};
+	vk::ImageFormatListCreateInfo bc_list {};
 	bool explicit_storage = false;
-	if (IsBc6h(create.format) && graphics.supports_block_texel_view &&
+	if (info.IsBlock() && graphics.supports_block_texel_view &&
 	    !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
-		if (QueryBc6hStorage(graphics, create, bc6h_formats, bc6h_list, properties) ==
+		if (QueryBcStorage(graphics, create, bc_formats, bc_list, properties) ==
 		        vk::Result::eSuccess &&
 		    static_cast<bool>(properties.sampleCounts & create.samples) &&
 		    create.extent.width <= properties.maxExtent.width &&
@@ -746,19 +749,25 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		    create.arrayLayers <= properties.maxArrayLayers) {
 			create.usage |= vk::ImageUsageFlagBits::eStorage;
 			create.flags |= vk::ImageCreateFlagBits::eExtendedUsage;
-			create.pNext = &bc6h_list;
+			create.pNext = &bc_list;
 			explicit_storage = true;
 			static std::atomic_flag logged = ATOMIC_FLAG_INIT;
 			if (!logged.test_and_set(std::memory_order_relaxed)) {
-				Log::WriteToConsoleAndLog("BC6H: enabled explicit compatible storage views.\n");
+				Log::WriteToConsoleAndLog(fmt::format("BC storage: explicit compatible views enabled for {}.\n", vk::to_string(create.format)));
 			}
 		}
 	}
-	if (IsBc6h(create.format) && !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
-		static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-		if (!warned.test_and_set(std::memory_order_relaxed)) {
-			Log::WriteToConsoleAndLog(
-			    "BC6H: native storage views unavailable; use raw block alias transfers.\n");
+	if (info.IsBlock() && !(create.usage & vk::ImageUsageFlagBits::eStorage)) {
+		// Log each compressed format independently, rather than treating capability
+		// failure for one format as proof that every texture write will fail.
+		static std::atomic_uint32_t warned {0};
+		const auto format_index = static_cast<uint32_t>(create.format) -
+		                          static_cast<uint32_t>(vk::Format::eBc1RgbUnormBlock);
+		if (format_index < 32u &&
+		    !(warned.fetch_or(1u << format_index, std::memory_order_relaxed) & (1u << format_index))) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "BC storage: native views unavailable for {}; raw block fallback required.\n",
+			    vk::to_string(create.format)));
 		}
 	}
 	if ((!explicit_storage &&

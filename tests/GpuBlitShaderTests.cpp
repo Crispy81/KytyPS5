@@ -1,6 +1,7 @@
 #include "gpu_blit_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/vertexWindowOffset.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 
 #include <gtest/gtest.h>
 #include <spirv/unified1/spirv.hpp>
@@ -9,6 +10,25 @@
 #include <iterator>
 
 namespace {
+
+TEST(GuestMultisampling, SignedSampleCoordinates) {
+	using Libs::Graphics::DecodeSampleCoordinate;
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(0), 0.5f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(7), 15.0f / 16.0f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(8), 0.0f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(15), 7.0f / 16.0f);
+	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(0xf3), 11.0f / 16.0f);
+}
+
+TEST(GuestMultisampling, PixelIterationCounts) {
+	using Libs::Graphics::PixelShadingSamples;
+	EXPECT_EQ(PixelShadingSamples(4, 0, false), 1u);
+	EXPECT_EQ(PixelShadingSamples(4, 1, false), 2u);
+	EXPECT_EQ(PixelShadingSamples(4, 2, false), 4u);
+	EXPECT_EQ(PixelShadingSamples(4, 7, false), 4u);
+	EXPECT_EQ(PixelShadingSamples(4, 0, true), 4u);
+	EXPECT_EQ(PixelShadingSamples(1, 3, true), 1u);
+}
 
 TEST(VertexWindowOffset, AppliesSignedTranslationOnlyWhenEnabled) {
 	float x = 12.5f;

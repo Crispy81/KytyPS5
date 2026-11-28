@@ -410,6 +410,14 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
 	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	graphics.sample_locations_enabled = add(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
+	if (graphics.sample_locations_enabled) {
+		vk::PhysicalDeviceProperties2 sample_properties {};
+		sample_properties.pNext = &graphics.sample_locations_properties;
+		physical_device.getProperties2(&sample_properties);
+	}
+	LOGF("Vulkan programmable sample locations: %s\n",
+	     graphics.sample_locations_enabled ? "available" : "unavailable");
 	add(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
 	const bool extended_dynamic_state = add(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 	if (!add(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
@@ -997,7 +1005,8 @@ void WindowContext::CreateVulkan() {
 	    .type = vk::ImageType::e2D,
 	    .tiling = vk::ImageTiling::eOptimal,
 	    .usage = vk::ImageUsageFlagBits::eSampled,
-	    .flags = vk::ImageCreateFlagBits::eBlockTexelViewCompatible,
+	    .flags = vk::ImageCreateFlagBits::eBlockTexelViewCompatible |
+	             vk::ImageCreateFlagBits::eMutableFormat,
 	};
 	const auto block_texel_view_props =
 	    graphic_ctx.physical_device.getImageFormatProperties2(block_texel_view_info);
