@@ -81,6 +81,8 @@ void FaultManager::ProcessFaultBuffer() {
 	pre_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
 	pre_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
 	pre_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
+	pre_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	pre_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	pre_barrier.buffer        = m_fault_buffer.Handle();
 	pre_barrier.offset        = 0;
 	pre_barrier.size           = m_fault_buffer.Size();
@@ -113,7 +115,22 @@ void FaultManager::ProcessFaultBuffer() {
 	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 128; // Four words per invocation.
 	const auto num_workgroups = (num_threads + 63) / 64;
 	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
-	dependency.pBufferMemoryBarriers = &post_barrier;
+	// The bitmap is consumed by later shaders; the separate output buffer is
+	// read by the CPU after the submission completes.
+	vk::BufferMemoryBarrier2 host_barrier {};
+	host_barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+	host_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+	host_barrier.dstStageMask = vk::PipelineStageFlagBits2::eHost;
+	host_barrier.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+	host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	host_barrier.buffer = m_download_buffer.Handle();
+	host_barrier.offset = offset;
+	host_barrier.size = PageFaultAreaSize;
+	const std::array barriers {post_barrier, host_barrier};
+	dependency.dependencyFlags = {};
+	dependency.bufferMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+	dependency.pBufferMemoryBarriers = barriers.data();
 	command.pipelineBarrier2(dependency);
 
 	const auto area = m_current_area;
@@ -124,7 +141,12 @@ void FaultManager::ProcessFaultBuffer() {
 		// An overflowing scan keeps counting past the MaxPageFaults - 1 records the area holds.
 		const auto count = std::min<uint64_t>(faults[0], MaxPageFaults - 1);
 		for (uint32_t index = 1; index <= count; ++index) {
-			const auto address = BufferCache::GuestAddress(faults[index]);
+			const auto packed = faults[index];
+			if (packed == 0 || packed >= BufferCache::CACHING_NUMPAGES * BufferCache::CACHING_PAGESIZE ||
+			    (packed & (BufferCache::CACHING_PAGESIZE - 1)) != 0) {
+				continue;
+			}
+			const auto address = BufferCache::GuestAddress(packed);
 			fault_ranges.Add(address, BufferCache::CACHING_PAGESIZE);
 			LOGF("Accessed non-GPU cached memory at 0x%016" PRIx64 "\n", address);
 		}

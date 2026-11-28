@@ -20,6 +20,9 @@ layout(std430, binding = 1) buffer output_buf32 {
 // Each invocation scans four bitmap words; nearly all are zero and return without a store.
 void main() {
     const uint id = gl_GlobalInvocationID.x;
+    if (id >= fault_buffer.length()) {
+        return;
+    }
     const uvec4 words = fault_buffer[id];
     if (all(equal(words, uvec4(0u)))) {
         return;

@@ -1419,6 +1419,26 @@ void DefineGetBdaPointer(EmitterState& state) {
 
 	const auto extended = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
 	                             ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase));
+	// Reject the null page, the gap between guest apertures and addresses above
+	// the extended aperture before narrowing the page index or touching a descriptor.
+	const auto lower_valid = AndCondition(
+	    state, Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
+	                  ConstantU64(state, BufferCache::CACHING_PAGESIZE)),
+	    Binary(state, spv::OpULessThan, TypeBool(state), address,
+	           ConstantU64(state, LOWER_ADDRESS_SIZE)));
+	const auto extended_valid = AndCondition(
+	    state, extended,
+	    Binary(state, spv::OpULessThan, TypeBool(state), address,
+	           ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase +
+	                                  LibKernel::Memory::kExtendedMemorySize)));
+	const auto valid = Binary(state, spv::OpLogicalOr, TypeBool(state), lower_valid, extended_valid);
+	const auto invalid_label = state.builder.AllocateId();
+	const auto valid_label = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelectionMerge, valid_label, spv::SelectionControlMaskNone);
+	state.builder.AddFunction(spv::OpBranchConditional, valid, valid_label, invalid_label);
+	EmitLabel(state, invalid_label);
+	state.builder.AddFunction(spv::OpReturnValue, ConstantU64(state, 0));
+	EmitLabel(state, valid_label);
 	const auto packed   = Select(
 	    state, type, extended,
 	    Binary(state, spv::OpISub, type, address,

@@ -452,7 +452,9 @@ void Swapchain::Create() {
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
-	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
+	LOGF("Vulkan presentation: %s (HDR config=%s, guest request=%s, surface support=%s)\n",
+	     m_hdr_active ? "HDR10 (PQ)" : "SDR", Config::HdrEnabled() ? "on" : "off",
+	     m_hdr_requested ? "on" : "off", IsHdrSupported() ? "yes" : "no");
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
