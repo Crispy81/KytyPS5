@@ -1209,6 +1209,18 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	auto&         occlusion_queries = m_context.GetOcclusionQueries();
 	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
+	std::array<uint64_t, 4> shader_hashes {};
+	for (size_t i = 0; i < vertex_stages.size(); ++i) {
+		if (vertex_stages[i].stage.module != nullptr)
+			shader_hashes[i] = vertex_stages[i].stage.module->info.shader_hash;
+	}
+	if (state.ps_active && state.ps_input_info.stage.module != nullptr)
+		shader_hashes[3] = state.ps_input_info.stage.module->info.shader_hash;
+	m_context.GetCommandScheduler().RecordGpuWork(
+	    mesh_task ? "mesh-task" : mesh_active ? "mesh" :
+	    emit.indirect.address != 0 ? "draw-indirect" : draw.Name(),
+	    shader_hashes, mesh_task ? emit.indirect.count : mesh_active ? mesh_groups : draw.index_count,
+	    draw.instance_count, emit.indirect.count, emit.indirect.address);
 	if (mesh_task) {
 		vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
 	} else if (mesh_active) {
