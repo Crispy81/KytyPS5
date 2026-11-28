@@ -27,6 +27,11 @@ void MasterSemaphore::Refresh() {
 	const auto result  = m_graphics.device.getSemaphoreCounterValue(m_semaphore, &counter);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
+	// Device loss can return UINT64_MAX even with eSuccess. It cannot be a completed
+	// tick: do not retire all outstanding resources or destroy diagnostic evidence.
+	if (counter >= CurrentTick()) {
+		return;
+	}
 	auto known = m_gpu_tick.load(std::memory_order_acquire);
 	while (known < counter &&
 	       !m_gpu_tick.compare_exchange_weak(known, counter, std::memory_order_release,
