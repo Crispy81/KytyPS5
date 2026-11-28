@@ -332,7 +332,15 @@ void CommandScheduler::DumpGpuWork(uint64_t failed_tick) {
 	const auto known = m_master.KnownGpuTick();
 	uint64_t counter = 0;
 	const auto result = m_graphics.device.getSemaphoreCounterValue(m_master.Handle(), &counter);
-	const auto completed = result == vk::Result::eSuccess ? std::max(known, counter) : known;
+	// A lost device may report UINT64_MAX with eSuccess. A failed submission
+	// cannot have completed, and later ticks have not been submitted.
+	const bool valid_counter = result == vk::Result::eSuccess && counter < failed_tick;
+	const auto completed = valid_counter ? std::max(known, counter) : known;
+	if (result == vk::Result::eSuccess && !valid_counter) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GPU history: rejecting impossible completion counter={} for failed tick={}\n",
+		    counter, failed_tick));
+	}
 	const auto first = m_gpu_work_count > GpuHistorySize ? m_gpu_work_count - GpuHistorySize : 0;
 	uint64_t pending = first;
 	while (pending < m_gpu_work_count &&
