@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/cache/readbackWindow.h"
 #include "gpu_blit_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/image/imageCopyPolicy.h"
@@ -11,6 +12,34 @@
 #include <iterator>
 
 namespace {
+
+TEST(BufferReadbackPrediction, NearbyWriteFaultsExpandWithoutDroppingRequestedBytes) {
+	using Libs::Graphics::ReadbackWindow;
+	constexpr uint64_t base = 8 * ReadbackWindow::MaxSize;
+	constexpr uint64_t end = base + 4 * ReadbackWindow::MaxSize;
+	ReadbackWindow window;
+	auto a = window.Select(base, end, base + 3 * ReadbackWindow::BaseSize, 4096, 10, true);
+	EXPECT_EQ(a.begin, base + 3 * ReadbackWindow::BaseSize);
+	auto b = window.Select(base, end, base + ReadbackWindow::BaseSize, 4096, 11, true);
+	EXPECT_EQ(b.begin, base);
+	EXPECT_EQ(b.end, base + ReadbackWindow::MaxSize);
+	auto c = window.Select(base, end, base + 2 * ReadbackWindow::MaxSize, 4096, 12, false);
+	EXPECT_EQ(c.begin, base + 2 * ReadbackWindow::MaxSize);
+	EXPECT_EQ(c.end, c.begin + ReadbackWindow::BaseSize);
+}
+
+TEST(BufferReadbackPrediction, ClampsToAllocationAndPreservesLargeRequest) {
+	using Libs::Graphics::ReadbackWindow;
+	constexpr uint64_t base = 8 * ReadbackWindow::MaxSize + 4096;
+	constexpr uint64_t end = base + ReadbackWindow::MaxSize - 8192;
+	ReadbackWindow window;
+	window.Select(base, end, base + ReadbackWindow::BaseSize, 4096, 1, false);
+	const auto range = window.Select(base, end, base, end - base, 2, true);
+	EXPECT_EQ(range.begin, base);
+	EXPECT_EQ(range.end, end);
+}
+
+
 
 TEST(GuestMultisampling, MixedAttachmentEligibility) {
 	using Libs::Graphics::CanPreserveMixedSamples;
