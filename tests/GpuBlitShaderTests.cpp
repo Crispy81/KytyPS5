@@ -28,6 +28,23 @@ TEST(BufferReadbackPrediction, NearbyWriteFaultsExpandWithoutDroppingRequestedBy
 	EXPECT_EQ(c.end, c.begin + ReadbackWindow::BaseSize);
 }
 
+TEST(BufferReadbackPrediction, LargeOwnerPromotesAndDecays) {
+	using Libs::Graphics::ReadbackWindow;
+	constexpr uint64_t base = 8 * ReadbackWindow::HotSize;
+	constexpr uint64_t end = base + 3 * ReadbackWindow::HotSize;
+	ReadbackWindow window;
+	window.Select(base, end, base, 4096, 1, true);
+	window.Select(base, end, base + ReadbackWindow::MaxSize, 4096, 2, true);
+	auto promoted = window.Select(base, end, base + 2 * ReadbackWindow::MaxSize, 4096, 3, true);
+	EXPECT_EQ(promoted.begin, base);
+	EXPECT_EQ(promoted.end, base + ReadbackWindow::HotSize);
+	auto repeated = window.Select(base, end, base + 2 * ReadbackWindow::MaxSize, 4096, 4, true);
+	EXPECT_LE(repeated.end - repeated.begin, ReadbackWindow::MaxSize);
+	auto different = window.Select(base, end, base + ReadbackWindow::HotSize, 4096, 5, true);
+	EXPECT_EQ(different.begin, base + ReadbackWindow::HotSize);
+	EXPECT_LE(different.end - different.begin, ReadbackWindow::MaxSize);
+}
+
 TEST(BufferReadbackPrediction, ClampsToAllocationAndPreservesLargeRequest) {
 	using Libs::Graphics::ReadbackWindow;
 	constexpr uint64_t base = 8 * ReadbackWindow::MaxSize + 4096;
