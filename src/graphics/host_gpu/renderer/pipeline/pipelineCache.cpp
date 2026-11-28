@@ -1055,6 +1055,33 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		return pipeline;
 	}
 
+	// Bounded diagnostics for distinct graphics pipelines; never log every draw.
+	// A cache hit does not imply the target contents are correct.
+	static std::atomic_uint32_t pass_reports {0};
+	if (pass_reports.fetch_add(1, std::memory_order_relaxed) < 2048u) {
+		std::string targets_log;
+		for (uint32_t i = 0; i < color_count; ++i) {
+			const auto& c = colors[i];
+			const auto extent = c.Extent();
+			targets_log += fmt::format(" c{}={:016x}:{}:{}x{}:{}s:m{}:l{}",
+			    c.target_slot, c.desc.info.data.address, vk::to_string(c.desc.view_info.format),
+			    extent.width, extent.height, c.desc.info.samples, c.desc.view_info.base_level,
+			    c.desc.view_info.base_layer);
+		}
+		if (with_depth) {
+			targets_log += fmt::format(" d={:016x}:{}:{}x{}:{}s:m{}:l{}:htile={:016x}",
+			    depth.desc.info.data.address, vk::to_string(depth.desc.view_info.format),
+			    depth.desc.info.extent.width, depth.desc.info.extent.height, depth.desc.info.samples,
+			    depth.desc.view_info.base_level, depth.desc.view_info.base_layer,
+			    depth.desc.info.metadata.range.address);
+		}
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "Render pipeline: vs={:016x} ps={:016x} raster={} shading={} mixed={} positions={}{}\n",
+		    stages[0]->info.shader_hash, ps_active ? stages[3]->info.shader_hash : uint64_t{0},
+		    static_params.samples, static_params.shading_sample_count,
+		    static_params.mixed_attachment_samples, static_params.programmable_sample_locations,
+		    targets_log));
+	}
 	if (graphics_debug_dump_enabled()) {
 		ShaderDbgDumpInputInfo(vs_input_info);
 		if (ps_active) {
