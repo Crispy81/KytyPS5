@@ -128,6 +128,10 @@ void ShaderStoreWriter::Append(std::vector<uint8_t>&& record) {
 		std::memcpy(bytes.data(), &frame, sizeof(frame));
 		// A failed write leaves a partial record; the next run drops it and everything after it.
 		m_file.Write(bytes.data(), static_cast<uint32_t>(sizeof(Frame) + size));
+		// Persist batches even if the guest or Vulkan driver subsequently aborts.
+		if ((++m_written_records % 32) == 1 && !m_file.Flush()) {
+			Log::WriteToConsoleAndLog("Shader cache: record flush failed\n");
+		}
 	});
 }
 
@@ -166,6 +170,16 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	auto       records = std::span<const uint8_t>(bytes);
 	const bool reusable =
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
+	if (!reusable && !bytes.empty()) {
+		uint64_t saved_stamp = 0, current_stamp = 0;
+		if (bytes.size() >= sizeof(saved_stamp)) std::memcpy(&saved_stamp, bytes.data(), sizeof(saved_stamp));
+		std::memcpy(&current_stamp, header.data(), sizeof(current_stamp));
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "Shader cache: rejected {} bytes ({}); saved build stamp={:016x}, current={:016x}\n",
+		    bytes.size(), bytes.size() < header.size() ? "truncated header" :
+		    saved_stamp != current_stamp ? "executable build stamp changed" : "GPU/compiler profile changed",
+		    saved_stamp, current_stamp));
+	}
 	if (reusable) {
 		records = records.subspan(header.size());
 		std::vector<WarmupModule> pending;
@@ -180,6 +194,10 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 			if (pending.size() >= 128) compile_batch();
 		}
 		compile_batch();
+		if (!records.empty()) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "Shader cache: ignoring {} trailing bytes after the last valid record\n", records.size()));
+		}
 	}
 	// A damaged record ends the store; the records before it stay.
 	m_store.Open(path, header, reusable ? bytes.size() - records.size() : 0);
