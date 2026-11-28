@@ -338,6 +338,10 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			viewport.width  = guest.xscale * 2.0f;
 			viewport.height = guest.yscale * 2.0f;
 		}
+		if (ctx.GetModeControl().vtx_window_offset_enable) {
+			viewport.x += static_cast<float>(vp.window_offset_x);
+			viewport.y += static_cast<float>(vp.window_offset_y);
+		}
 		viewport.minDepth =
 		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
 		viewport.maxDepth = guest.zscale + guest.zoffset;
