@@ -147,7 +147,6 @@ void BufferCache::ChangeRegister(BufferId id) {
 	} else {
 		m_buffers.erase(m_buffers.find(buffer.CpuAddress()));
 		m_total_used_memory -= buffer.Size();
-		if (buffer.IsSharedCache()) m_shared_reserved -= buffer.Size();
 		m_shared_candidates.erase(buffer.CpuAddress());
 		m_lru_cache.Free(buffer.lru_id);
 		m_bda_pagetable_buffer.Fill(table_offset,
@@ -162,10 +161,15 @@ void BufferCache::TouchBuffer(const Buffer& buffer) {
 
 void BufferCache::DeleteBuffer(BufferId id) {
 	Unregister(id);
-	if (m_scheduler.Active()) {
-		m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
-	} else {
+	auto retire = [this, id] {
+		const auto& buffer = m_slot_buffers[id];
+		if (buffer.IsSharedCache()) m_shared_reserved -= buffer.Size();
 		m_slot_buffers.erase(id);
+	};
+	if (m_scheduler.Active()) {
+		m_scheduler.DeferOperation(std::move(retire));
+	} else {
+		retire();
 	}
 }
 
@@ -410,8 +414,23 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		if (IsRegionGpuModified(vaddr, size)) {
 			const auto base = buffer.CpuAddress();
 			auto& history = m_readback_windows[(base * 0x9e3779b97f4a7c15ull) >> 56u];
-			const auto [start, end] = history.Select(base, base + buffer.Size(), vaddr, size,
-			                                         m_scheduler.CurrentTick(), is_write);
+			auto [start, end] = history.Select(base, base + buffer.Size(), vaddr, size,
+			                                   m_scheduler.CurrentTick(), is_write);
+			// Host-readable buffers need no intermediate staging copy. When the
+			// complete owner has a bounded dirty-byte count, publish all its
+			// outstanding GPU writes behind one completion wait. Retain the
+			// ordinary window if too much data is dirty or backing is sparse.
+			if (buffer.IsSharedCache() &&
+			    m_scheduler.Context().IsMapped(base, buffer.Size()) &&
+			    !m_texture_cache.IsRegionRegistered(base, buffer.Size())) {
+				uint64_t dirty_bytes = 0;
+				m_gpu_modified_ranges.ForEachInRange(base, buffer.Size(),
+				    [&](uint64_t first, uint64_t last) { dirty_bytes += last - first; });
+				if (dirty_bytes <= SharedBufferPolicy::PublishBudget) {
+					start = base;
+					end = base + buffer.Size();
+				}
+			}
 			if (end - start > ReadbackWindow::BaseSize && size <= ReadbackWindow::BaseSize) {
 				Common::DebugCounters::Add(Common::DebugCounters::Counter::ReadbackExpandedWindows);
 			}
@@ -894,6 +913,7 @@ void BufferCache::RunGarbageCollector() {
 		m_memory_tracker.UnmarkRegionAsGpuModified(buffer.CpuAddress(), buffer.Size());
 		m_memory_tracker.MarkRegionAsCpuModified(buffer.CpuAddress(), buffer.Size());
 		Unregister(id);
+		if (buffer.IsSharedCache()) m_shared_reserved -= buffer.Size();
 		m_slot_buffers.erase(id);
 	}
 }

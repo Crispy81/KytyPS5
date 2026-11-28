@@ -100,6 +100,12 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 			result = vk::Result::eErrorMemoryMapFailed;
 		}
 	}
+	if (prefer_shared && !m_shared_cache) {
+		// The caller still owns the original device-local buffer. A failed
+		// optional migration must not allocate another VRAM buffer or abort.
+		m_allocation = nullptr;
+		return;
+	}
 	if (!m_shared_cache) {
 		result = static_cast<vk::Result>(vmaCreateBuffer(
 		    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,

@@ -7,6 +7,7 @@ struct SharedBufferPolicy {
 	static constexpr uint64_t MinSize = 4 * MiB;
 	static constexpr uint64_t MaxSize = 64 * MiB;
 	static constexpr uint64_t Budget = 256 * MiB;
+	static constexpr uint64_t PublishBudget = 8 * MiB;
 	static constexpr uint32_t HotThreshold = 32;
 	static constexpr bool Eligible(uint64_t size, uint64_t reserved, uint32_t faults) {
 		return size >= MinSize && size <= MaxSize && reserved <= Budget &&
