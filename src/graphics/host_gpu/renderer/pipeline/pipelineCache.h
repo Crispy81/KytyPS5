@@ -276,7 +276,12 @@ private:
 
 	// pipelineSerialization.cpp
 	void WarmUp(const std::filesystem::path& path);
-	bool LoadRecord(std::span<const uint8_t>& records);
+	struct WarmupModule {
+		Program* program;
+		size_t index;
+		std::vector<uint32_t> spirv;
+	};
+	bool LoadRecord(std::span<const uint8_t>& records, std::vector<WarmupModule>& pending);
 	void StoreModule(const ProgramKey& key, const Program& program, const ShaderModule& module,
 	                 const std::vector<uint32_t>& spirv);
 	void StorePipeline(const GraphicsPipelineKey& key);
