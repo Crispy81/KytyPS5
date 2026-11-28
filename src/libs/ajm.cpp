@@ -878,12 +878,15 @@ int KYTY_SYSV_ABI AjmBatchJobDecodeSplit(AjmBatchInfo* info, uint32_t instance,
 	    result, AJM_SIDEBAND_RESULT_SIZE + AJM_SIDEBAND_STREAM_SIZE + AJM_SIDEBAND_MFRAME_SIZE,
 	    decode_result, true);
 
-	LOGF("\t instance = 0x%08" PRIx32 ", input_buffers = 0x%016" PRIx64
-	     ", input_num = 0x%016" PRIx64 ", output_buffers = 0x%016" PRIx64
-	     ", output_num = 0x%016" PRIx64 "\n",
-	     instance, reinterpret_cast<uint64_t>(input_buffers),
-	     static_cast<uint64_t>(input_buffers_num), reinterpret_cast<uint64_t>(output_buffers),
-	     static_cast<uint64_t>(output_buffers_num));
+	if (KYTY_BUILD == KYTY_BUILD_DEBUG ||
+	    (decode_result.result & (AJM_RESULT_CODEC_ERROR | AJM_RESULT_FATAL)) != 0) {
+		LOGF("\t instance = 0x%08" PRIx32 ", input_buffers = 0x%016" PRIx64
+		     ", input_num = 0x%016" PRIx64 ", output_buffers = 0x%016" PRIx64
+		     ", output_num = 0x%016" PRIx64 ", result = 0x%08" PRIx32 "\n",
+		     instance, reinterpret_cast<uint64_t>(input_buffers),
+		     static_cast<uint64_t>(input_buffers_num), reinterpret_cast<uint64_t>(output_buffers),
+		     static_cast<uint64_t>(output_buffers_num), static_cast<uint32_t>(decode_result.result));
+	}
 	return AjmAppendJob(info, 16 * (input_buffers_num + output_buffers_num) + 32, "decode-split");
 }
 

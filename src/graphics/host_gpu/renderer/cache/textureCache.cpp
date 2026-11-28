@@ -2078,17 +2078,20 @@ bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice) {
 	return found->second.clear_mask.test(slice);
 }
 
-uint64_t TextureCache::MetaRangeSize(uint64_t address) {
+bool TextureCache::TryClearExactHtile(uint64_t address, uint64_t size) {
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end()) {
-		return 0;
+		return false;
 	}
 	const auto* owner = m_slot_images.try_get(found->second.owner);
-	if (owner == nullptr || !owner->registered || owner->info.metadata.range.address != address) {
-		return 0;
+	if (owner == nullptr || !owner->registered ||
+	    owner->info.metadata.kind != ImageMetadataKind::Htile ||
+	    owner->info.metadata.range != GuestRange {address, size}) {
+		return false;
 	}
-	return owner->info.metadata.range.size;
+	found->second.clear_mask.set();
+	return true;
 }
 
 bool TextureCache::ClearMeta(uint64_t address) {

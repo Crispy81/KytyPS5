@@ -2,6 +2,7 @@
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/rangeSet.h"
+#include "graphics/host_gpu/renderer/cache/readbackWindow.h"
 
 #include <atomic>
 #include <chrono>
@@ -303,6 +304,54 @@ void TestRangeSet() {
             intersections[0].second == 0x1040 &&
             intersections[1].first == 0x1220 && intersections[1].second == 0x1240,
         "range set subtraction did not preserve both exact tails");
+}
+
+void TestReadbackWindow() {
+  using Libs::Graphics::ReadbackWindow;
+  constexpr auto page = Libs::Graphics::TRACKER_PAGE_SIZE;
+  constexpr auto base = 8 * ReadbackWindow::HotSize;
+  constexpr auto limit = base + 3 * ReadbackWindow::HotSize;
+
+  ReadbackWindow window;
+  const auto first = window.Select(base, limit, base, base + page, 1, true);
+  Check(first.begin == base && first.end == base + ReadbackWindow::BaseSize &&
+            !first.expanded,
+        "isolated write fault did not retain the base readback span");
+
+  const auto next = base + ReadbackWindow::BaseSize;
+  const auto nearby = window.Select(base, limit, next, next + page, 2, true);
+  Check(nearby.begin == base && nearby.end == base + ReadbackWindow::LocalSize &&
+            nearby.expanded,
+        "nearby write faults did not expand to their local group");
+
+  const auto second_group = base + ReadbackWindow::LocalSize;
+  const auto third_group = second_group + ReadbackWindow::LocalSize;
+  (void)window.Select(base, limit, second_group, second_group + page, 3, true);
+  const auto promoted =
+      window.Select(base, limit, third_group, third_group + page, 4, true);
+  Check(promoted.begin == base && promoted.end == base + ReadbackWindow::HotSize &&
+            promoted.expanded,
+        "cross-group faults did not promote to the bounded 8 MiB span");
+
+  const auto repeated =
+      window.Select(base, limit, third_group, third_group + page, 5, true);
+  Check(repeated.begin == third_group && !repeated.expanded,
+        "a fault in the same group did not decay cross-group prefetch");
+
+  (void)window.Select(base, limit, base, base + page, 6, false);
+  const auto crossing = window.Select(
+      base, limit, second_group, base + ReadbackWindow::HotSize + page, 7, false);
+  Check(crossing.begin == second_group &&
+            crossing.end == base + ReadbackWindow::HotSize + page &&
+            !crossing.expanded,
+        "a read crossing the predicted span lost required data or prefetched extra pages");
+
+  const auto new_owner = base + page;
+  const auto owner_end = base + 3 * page;
+  const auto clipped =
+      window.Select(new_owner, owner_end, new_owner, owner_end, 8, false);
+  Check(clipped.begin == new_owner && clipped.end == owner_end && !clipped.expanded,
+        "readback span crossed the new owner's bounds");
 }
 
 void TestGuestRange() {
@@ -1230,6 +1279,7 @@ int main(int argc, char **argv) {
   }
   TestGuestRange();
   TestRangeSet();
+  TestReadbackWindow();
   TestQueriesDoNotRequireMappedOwnership();
   TestConcurrentRegionPublication();
   TestCpuDirtyUpload();

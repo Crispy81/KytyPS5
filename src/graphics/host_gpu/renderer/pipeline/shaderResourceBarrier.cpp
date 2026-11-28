@@ -77,7 +77,9 @@ bool HasShaderBufferWrites(const ShaderStageRuntime& runtime) {
 	const auto& resources = *runtime.resources;
 	EXIT_IF(resources.buffers.size() != program.info.buffers.size());
 	// Address writes reach memory outside the bound buffer descriptors.
-	bool has_writes = program.has_address_writes;
+	if (program.has_address_writes) {
+		return true;
+	}
 	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 		if (!program.info.buffers[i].written) {
 			continue;
@@ -87,9 +89,11 @@ bool HasShaderBufferWrites(const ShaderStageRuntime& runtime) {
 		std::memcpy(descriptor.fields, value.dwords.data(), sizeof(descriptor.fields));
 		// A zero stride means byte addressing. For either addressing mode a nonzero record
 		// count is exactly the condition for a nonempty descriptor range.
-		has_writes |= descriptor.Base48() != 0 && descriptor.NumRecords() != 0;
+		if (descriptor.Base48() != 0 && descriptor.NumRecords() != 0) {
+			return true;
+		}
 	}
-	return has_writes;
+	return false;
 }
 
 void ShaderAccessBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags source_stages) {

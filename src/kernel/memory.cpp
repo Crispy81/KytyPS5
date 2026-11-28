@@ -2297,17 +2297,20 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 
 	*addr = reinterpret_cast<void*>(out_addr);
 
-	LOGF("\t in_addr  = 0x%016" PRIx64 "\n"
-	     "\t out_addr = 0x%016" PRIx64 "\n"
-	     "\t dmem     = 0x%016" PRIx64 "\n"
-	     "\t size     = 0x%016" PRIx64 "\n"
-	     "\t mode     = %s\n"
-	     "\t flags    = 0x%08" PRIx32 "\n"
-	     "\t align    = 0x%016" PRIx64 "\n"
-	     "\t reason   = %s\n",
-	     in_addr, out_addr, static_cast<uint64_t>(direct_memory_start), len,
-	     magic_enum::enum_name(mode), static_cast<uint32_t>(flags), alignment,
-	     GuestBackingStore::GetFailureReasonName(shared_failure));
+	// Streaming titles can remap tens of thousands of pages while holding the operation lock.
+	if (KYTY_BUILD == KYTY_BUILD_DEBUG || out_addr == 0) {
+		LOGF("\t in_addr  = 0x%016" PRIx64 "\n"
+		     "\t out_addr = 0x%016" PRIx64 "\n"
+		     "\t dmem     = 0x%016" PRIx64 "\n"
+		     "\t size     = 0x%016" PRIx64 "\n"
+		     "\t mode     = %s\n"
+		     "\t flags    = 0x%08" PRIx32 "\n"
+		     "\t align    = 0x%016" PRIx64 "\n"
+		     "\t reason   = %s\n",
+		     in_addr, out_addr, static_cast<uint64_t>(direct_memory_start), len,
+		     magic_enum::enum_name(mode), static_cast<uint32_t>(flags), alignment,
+		     GuestBackingStore::GetFailureReasonName(shared_failure));
+	}
 
 	if (out_addr == 0) {
 		return KERNEL_ERROR_ENOMEM;
@@ -2325,8 +2328,9 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		}
 	}
 
+#if KYTY_BUILD == KYTY_BUILD_DEBUG
 	LOGF_COLOR(Log::Color::Green, "\t [Ok]\n");
-
+#endif
 	return OK;
 }
 

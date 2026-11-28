@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
+#include "graphics/host_gpu/renderer/cache/readbackWindow.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <array>
@@ -167,6 +168,9 @@ private:
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;
+	// Synchronous readback records are used only on the GPU thread and never deferred.
+	std::vector<vk::BufferCopy>                        m_sync_download_copies;
+	std::array<ReadbackWindow, 256>                    m_readback_windows {};
 	StreamBuffer                                      m_device_buffer;
 	std::array<StreamCopy, 1u << STREAM_COPY_BITS>    m_stream_copies {};
 	uint64_t                                          m_draw_window = 0;

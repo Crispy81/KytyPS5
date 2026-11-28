@@ -173,15 +173,30 @@ void CommandScheduler::Wait(uint64_t tick) {
 }
 
 void CommandScheduler::PopPendingOperations() {
+	bool refreshed = false;
 	for (;;) {
 		PendingOperation operation;
 		{
 			std::lock_guard lock(m_operation_mutex);
-			if (m_pending_operations.empty() || !IsFree(m_pending_operations.front().tick)) {
+			if (m_pending_operations.empty()) {
 				return;
 			}
-			operation = std::move(m_pending_operations.front());
-			m_pending_operations.pop();
+			const auto tick = m_pending_operations.front().tick;
+			if (!m_master.IsFree(tick)) {
+				// A callback for the open tick cannot be ready. Poll at most once
+				// per call, and outside the operation mutex.
+				if (refreshed || tick >= CurrentTick()) {
+					return;
+				}
+			} else {
+				operation = std::move(m_pending_operations.front());
+				m_pending_operations.pop();
+			}
+		}
+		if (!operation.callback) {
+			m_master.Refresh();
+			refreshed = true;
+			continue;
 		}
 		WaitPriorityOperations(operation.tick);
 		RunOperation(std::move(operation.callback));
@@ -278,6 +293,10 @@ void CommandScheduler::RunOperation(Common::UniqueFunction<void>&& operation) {
 bool CommandScheduler::IsFree(uint64_t tick) {
 	if (m_master.IsFree(tick)) {
 		return true;
+	}
+	// No Vulkan timeline query can complete work that has not been submitted.
+	if (tick >= CurrentTick()) {
+		return false;
 	}
 	m_master.Refresh();
 	return m_master.IsFree(tick);

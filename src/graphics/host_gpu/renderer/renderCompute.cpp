@@ -31,7 +31,6 @@
 #include <array>
 #include <atomic>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <mutex>
 #include <span>
@@ -54,40 +53,47 @@ static bool FillSourcesDisjoint(std::span<const ShaderRecompiler::IR::Descriptor
 bool RenderExecutor::TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
                                                 const CommandBuffer&          buffer) {
 	const auto& program   = input.stage.module->info;
+	const auto& info      = program.info;
 	const auto& resources = *input.stage.resources;
-	if (resources.buffers.size() != program.info.buffers.size()) {
+	if (resources.buffers.size() != info.buffers.size()) {
 		EXIT("compute runtime buffer count does not match shader metadata\n");
 	}
+	if (info.has_bitwise_xor || info.uses_dma || info.uses_gds || program.has_address_writes ||
+	    std::ranges::any_of(info.images,
+	                        [](const auto& image) { return image.written || image.atomic; })) {
+		return false;
+	}
+
+	uint32_t output = UINT32_MAX;
+	for (uint32_t i = 0; i < info.buffers.size(); i++) {
+		const auto& resource = info.buffers[i];
+		if (resource.atomic) {
+			return false;
+		}
+		if (!resource.written) {
+			continue;
+		}
+		if (output != UINT32_MAX || resource.read ||
+		    resource.indirect_root != ShaderRecompiler::IR::BufferResource::NoIndirectBuffer ||
+		    !resource.indirect_resources.empty()) {
+			return false;
+		}
+		output = i;
+	}
+	if (output == UINT32_MAX) {
+		return false;
+	}
 	auto& cache = buffer.GetContext().GetTextureCache();
-	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
-		const auto& resource   = program.info.buffers[i];
-		const auto  descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-		// A metadata resource that is also read is not proven to be a full overwrite. Execute it
-		// conservatively instead of replacing the dispatch with a coarse full-surface clear.
-		if ((!resource.written || resource.read) && cache.IsMeta(descriptor.Base48())) {
+	for (uint32_t i = 0; i < resources.buffers.size(); i++) {
+		if (i == output) continue;
+		const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
+		if (cache.IsMeta(descriptor.Base48())) {
 			return false;
 		}
 	}
-
-	if (!program.info.has_bitwise_xor) {
-		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
-			const auto& resource = program.info.buffers[i];
-			if (resource.written) {
-				const auto descriptor =
-				    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-				// Games reuse the memory of HTile ranges for other data, and a cached depth image
-				// can outlive that reuse. Only a write of exactly the live HTile range is a
-				// metadata clear; consuming any other drops the dispatch's real writes (a work
-				// queue that is then never reset hangs the GPU, a larger buffer is never filled).
-				const auto base      = descriptor.Base48();
-				const auto meta_size = cache.MetaRangeSize(base);
-				if (meta_size != 0 && descriptor.GetSize() == meta_size && cache.ClearMeta(base)) {
-					return true;
-				}
-			}
-		}
-	}
-	return false;
+	// Reused HTile addresses and dispatches with other outputs must execute their writes.
+	const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[output]);
+	return cache.TryClearExactHtile(descriptor.Base48(), descriptor.GetSize());
 }
 
 bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t group_x,
@@ -196,6 +202,11 @@ bool RenderExecutor::TryConsumeComputeFill(const ShaderComputeInputInfo& input,
 	                              size)) {
 		return false;
 	}
+	// This path must not arm a coarse HTile clear through BufferCache::FillBuffer when
+	// the metadata classifier left the dispatch for the shader to execute.
+	if (cache.IsMeta(descriptor.Base48())) {
+		return false;
+	}
 	const bool image_clear =
 	    cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear);
 	if (!image_clear) {
@@ -259,9 +270,8 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	}
 	auto& cache = context.GetBufferCache();
 	if (indirect_args != 0) {
-		cache.ReadMemory(indirect_args, sizeof(vk::DispatchIndirectCommand));
-		std::memcpy(input.workgroup_counts, reinterpret_cast<const void*>(indirect_args),
-		            sizeof(input.workgroup_counts));
+		LibKernel::Memory::ReadGuestMemory(indirect_args, input.workgroup_counts,
+		                                   sizeof(input.workgroup_counts));
 	}
 	// LDS has no contents to preserve between dispatches. The existing shader hazard
 	// barriers also order other users of this GPU-only utility buffer.

@@ -27,8 +27,18 @@ namespace {
 
 constexpr uint64_t MiB           = 1024 * 1024;
 constexpr uint64_t GdsBufferSize = 64 * 1024;
-// GPU-modified ranges come as many small scattered islands, so a readback widens to a window.
-constexpr uint64_t DownloadWindowSize = 512 * 1024;
+static_assert(ReadbackWindow::BaseSize % TRACKER_PAGE_SIZE == 0);
+
+void AppendCopy(std::vector<vk::BufferCopy>& copies, uint64_t src, uint64_t dst, uint64_t size) {
+	if (!copies.empty()) {
+		auto& last = copies.back();
+		if (last.srcOffset + last.size == src && last.dstOffset + last.size == dst) {
+			last.size += size;
+			return;
+		}
+	}
+	copies.emplace_back(src, dst, size);
+}
 
 std::pair<Buffer*, uint64_t> UploadMemory(GraphicContext& graphics, CommandScheduler& scheduler,
                                         StreamBuffer& staging, uint64_t size, uint64_t alignment,
@@ -153,7 +163,9 @@ void BufferCache::DeleteBuffer(BufferId id) {
 
 template <bool async>
 bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size) {
-	std::vector<vk::BufferCopy> copies;
+	std::vector<vk::BufferCopy> deferred_copies;
+	auto&                      copies = async ? deferred_copies : m_sync_download_copies;
+	copies.clear();
 	uint64_t                    total_size     = 0;
 	const auto                  buffer_address = buffer.CpuAddress();
 	m_memory_tracker.ForEachDownloadRange<false>(
@@ -161,7 +173,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		    m_memory_tracker.ValidateGpuDirtyPages(m_gpu_modified_ranges, address, bytes,
 		                                           "buffer download");
 		    m_gpu_modified_ranges.ForEachInRange(address, bytes, [&](uint64_t start, uint64_t end) {
-			    copies.emplace_back(start - buffer_address, total_size, end - start);
+			    AppendCopy(copies, start - buffer_address, total_size, end - start);
 			    // Start each packed range on its own 64-byte cache line.
 			    total_size += Common::AlignUp(end - start, 64);
 		    });
@@ -187,8 +199,9 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	before.buffer              = buffer.Handle();
-	before.offset              = 0;
-	before.size                = buffer.Size();
+	// Download ranges are collected in address order.
+	before.offset = copies.front().srcOffset;
+	before.size   = copies.back().srcOffset + copies.back().size - before.offset;
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 1, &before, 0,
 	                       nullptr);
@@ -205,22 +218,28 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	                       vk::PipelineStageFlagBits::eAllCommands |
 	                           vk::PipelineStageFlagBits::eHost,
 	                       {}, 0, nullptr, 1, &after, 0, nullptr);
-	auto publish = [total_size, buffer_address, copies = std::move(copies),
-	                download = std::move(download)] {
+	auto publish = [total_size, buffer_address](std::span<const vk::BufferCopy> records,
+	                                           const StreamBuffer::Download& download) {
 		download.buffer->Invalidate(download.offset, total_size);
-		for (const auto& copy: copies) {
+		for (const auto& copy: records) {
 			Libs::LibKernel::Memory::WriteBacking(
 			    buffer_address + copy.srcOffset,
 			    download.mapped + (copy.dstOffset - download.offset), copy.size);
 		}
 	};
 	if constexpr (async) {
-		m_scheduler.DeferPriorityOperation(std::move(publish));
+		m_scheduler.DeferPriorityOperation([publish, copies = std::move(deferred_copies),
+		                                    download = std::move(download)] {
+			publish(copies, download);
+		});
 	} else {
+		using Common::DebugCounters::Counter;
+		const Common::DebugCounters::ScopedTimer timer(Counter::BufferSyncReadbacks,
+		                                               Counter::BufferSyncReadbackNs);
 		const auto tick = m_scheduler.CurrentTick();
 		m_scheduler.Wait(tick);
 		m_scheduler.WaitPriorityOperations(tick);
-		publish();
+		publish(copies, download);
 	}
 	return true;
 }
@@ -294,12 +313,16 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 		if (IsRegionGpuModified(vaddr, size)) {
-			const auto start =
-			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
-			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
-			                          buffer.CpuAddress() + buffer.Size());
+			const auto base         = buffer.CpuAddress();
+			const auto required_end = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+			auto& history = m_readback_windows[(base * 0x9e3779b97f4a7c15ull) >> 56u];
+			const auto [start, end, expanded] = history.Select(
+			    base, base + buffer.Size(), vaddr, required_end, m_scheduler.CurrentTick(), is_write);
 			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
+				if (expanded) {
+					Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferExpandedReadbacks);
+				}
 			}
 		}
 		if (is_write) {
@@ -418,7 +441,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	m_memory_tracker.ForEachUploadRange(
 	    vaddr, size, is_written,
 	    [&](uint64_t address, uint64_t bytes) noexcept {
-		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
+		    AppendCopy(copies, total_size, buffer.Offset(address), bytes);
 		    total_size += bytes;
 	    },
 	    [&]() noexcept {
@@ -483,9 +506,12 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
                                                        BufferId id) {
 	EXIT_IF(!(GuestRange {vaddr, size}.Valid()));
 
+	// A CPU-dirty buffer page can still alias a newer GPU image. Image-aware reads
+	// need SynchronizeBufferFromImage when a texture is registered over the range.
 	if (!is_written && size <= CACHING_PAGESIZE &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
-	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
+	    m_memory_tracker.IsRegionCpuModified(vaddr, size) &&
+	    (!is_texel_buffer || !m_texture_cache.IsRegionRegistered(vaddr, size))) {
 		// Within one draw window the guest has no signal to rewrite the range. A copy made in this
 		// tick at most an eighth of a lap ago is nearly a lap ahead of the ring's writes, like a
 		// fresh copy, even if the draw's preparation submits the tick.

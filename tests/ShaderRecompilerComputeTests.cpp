@@ -487,7 +487,7 @@ struct TextureCacheTestAccess {
     return cache.DownloadImageMemory(id);
   }
 
-  static void RegisterHtileMeta(TextureCache &cache, uint64_t address) {
+  static void RegisterUnownedHtileMeta(TextureCache &cache, uint64_t address) {
     std::lock_guard lock(cache.m_lock);
     auto &metadata = cache.m_surface_metas[address];
     metadata.clear_mask.reset();
@@ -7024,9 +7024,13 @@ public:
 
   void CheckComputeMetaClearClassification() {
     constexpr const char *name = "ComputeMetaClearClassification";
-    constexpr uint64_t read_only_meta = 0x0000000204201f00ull;
-    constexpr uint64_t read_write_meta = 0x0000000204202000ull;
-    constexpr uint64_t write_only_meta = 0x0000000204202100ull;
+    constexpr uint64_t base = 0x0000000204200000ull;
+    constexpr uint64_t allocation_size = 0x10000;
+    constexpr uint64_t read_only_meta = base + 0x1f00;
+    constexpr uint64_t read_write_meta = base + 0x2000;
+    constexpr uint64_t write_only_meta = base + 0x2100;
+    constexpr uint64_t unowned_meta = base + 0x2200;
+    constexpr uint64_t metadata_size = 8 * 16;
     EnsureRuntimeContext();
     RenderContext context(m_runtime_context);
     auto &scheduler = context.GetCommandScheduler();
@@ -7034,10 +7038,43 @@ public:
     HW::UserConfig user_config{};
     HW::Shader shaders{};
     scheduler.Begin(registers, user_config, shaders);
+    context.InitializeGpu(nullptr);
+    int64_t direct_offset = -1;
+    Require(name, "direct allocation",
+            LibKernel::Memory::KernelAllocateDirectMemory(
+                0, LibKernel::Memory::KernelGetDirectMemorySize(), allocation_size,
+                allocation_size, 0, &direct_offset) == 0,
+            "metadata fixture allocation failed");
+    void *mapped = reinterpret_cast<void *>(base);
+    Require(name, "direct mapping",
+            LibKernel::Memory::KernelMapDirectMemory(
+                &mapped, allocation_size, 0x3, 0x10, direct_offset,
+                allocation_size) == 0 &&
+                mapped == reinterpret_cast<void *>(base),
+            "metadata fixture mapping failed");
+    std::memset(mapped, 0, allocation_size);
+    context.MapMemory(base, allocation_size);
     auto &texture_cache = context.GetTextureCache();
-    TextureCacheTestAccess::RegisterHtileMeta(texture_cache, read_only_meta);
-    TextureCacheTestAccess::RegisterHtileMeta(texture_cache, read_write_meta);
-    TextureCacheTestAccess::RegisterHtileMeta(texture_cache, write_only_meta);
+    const auto RegisterDepthTarget = [&](uint64_t pixels, uint64_t metadata) {
+      auto desc = MakeLinearDesc(
+          pixels, sizeof(uint32_t), vk::Format::eD32Sfloat,
+          Prospero::BufferFormat::k32Float, Prospero::ImageType::kColor2D,
+          {1, 1, 1}, 1, 4, 1);
+      desc.type = TextureCache::BindingType::DepthTarget;
+      desc.info.metadata.kind = ImageMetadataKind::Htile;
+      desc.info.metadata.range = {metadata, metadata_size};
+      desc.info.htile_initial_clear = false;
+      desc.view_info.aspect = vk::ImageAspectFlagBits::eDepth;
+      desc.view_info.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment;
+      const auto id = texture_cache.FindImage(desc);
+      Require(name, "depth target registration",
+              texture_cache.FindDepthTarget(id, desc) != nullptr,
+              "metadata fixture could not bind its depth target");
+    };
+    RegisterDepthTarget(base + 0x100, read_only_meta);
+    RegisterDepthTarget(base + 0x200, read_write_meta);
+    RegisterDepthTarget(base + 0x300, write_only_meta);
+    TextureCacheTestAccess::RegisterUnownedHtileMeta(texture_cache, unowned_meta);
 
     // An empty dispatch must not inspect even an unreadable shader address.
     shaders.SetCsShader({.data_addr = 1});
@@ -7116,9 +7153,79 @@ public:
 
     ShaderModule write_only_program;
     ShaderRecompiler::IR::ResourceSnapshot write_only_snapshot;
-    const auto write_only_input =
+    auto write_only_input =
         MakeInput(write_only_meta, false, true, write_only_program,
                   write_only_snapshot);
+
+    for (uint32_t records : {4u, 16u}) {
+      write_only_snapshot.buffers.front().dwords[2] = records;
+      Require(name, "inexact descriptor preserved",
+              !RenderExecutorTestAccess::TryConsumeComputeMetaClear(
+                  executor, write_only_input, command) &&
+                  !texture_cache.IsMetaCleared(write_only_meta, 0),
+              "an inexact buffer descriptor cleared the whole depth target");
+    }
+    write_only_snapshot.buffers.front().dwords[2] = 4;
+    write_only_snapshot.uniform_fill.kind = ShaderRecompiler::IR::UniformFillKind::Buffer;
+    write_only_snapshot.uniform_fill.resource = 0;
+    write_only_snapshot.uniform_fill.words = 4;
+    write_only_snapshot.uniform_fill.group_stride = {4, 1, 1};
+    write_only_input.threads_num[0] = 4;
+    write_only_input.threads_num[1] = 1;
+    write_only_input.threads_num[2] = 1;
+    ShaderBufferResource fill_descriptor{};
+    uint32_t fill_value = 0;
+    uint64_t fill_size = 0;
+    Require(name, "partial fill fixture",
+            ResolveComputeBufferFill(write_only_input, 1, 1, 1, 0x41,
+                                     fill_descriptor, fill_value, fill_size) &&
+                fill_size == metadata_size / 2,
+            "the uniform-fill optimizer did not recognize the fixture");
+    Require(name, "inexact generic fill preserved",
+            !RenderExecutorTestAccess::TryConsumeComputeFill(
+                executor, write_only_input, command, 1, 1, 1, 0x41) &&
+                !texture_cache.IsMetaCleared(write_only_meta, 0),
+            "the generic buffer-fill path armed a whole HTile clear");
+    write_only_snapshot.uniform_fill = {};
+    write_only_snapshot.buffers.front().dwords[2] = 8;
+
+    ShaderModule unowned_program;
+    ShaderRecompiler::IR::ResourceSnapshot unowned_snapshot;
+    const auto unowned_input =
+        MakeInput(unowned_meta, false, true, unowned_program, unowned_snapshot);
+    Require(name, "unowned metadata preserved",
+            !RenderExecutorTestAccess::TryConsumeComputeMetaClear(
+                executor, unowned_input, command) &&
+                !texture_cache.IsMetaCleared(unowned_meta, 0),
+            "a metadata entry without a live owner absorbed a dispatch");
+
+    (void)MakeInput(base + 0x400, false, true, write_only_program,
+                    write_only_snapshot);
+    Require(name, "additional buffer output preserved",
+            !RenderExecutorTestAccess::TryConsumeComputeMetaClear(
+                executor, write_only_input, command) &&
+                !texture_cache.IsMetaCleared(write_only_meta, 0),
+            "a metadata clear dropped another buffer output");
+    write_only_program.info.info.buffers.pop_back();
+    write_only_snapshot.buffers.pop_back();
+    ShaderRecompiler::IR::ImageResource image_output{};
+    image_output.resource_class = ShaderRecompiler::IR::ImageResourceClass::Storage;
+    image_output.written = true;
+    write_only_program.info.info.images.push_back(image_output);
+    Require(name, "additional image output preserved",
+            !RenderExecutorTestAccess::TryConsumeComputeMetaClear(
+                executor, write_only_input, command) &&
+                !texture_cache.IsMetaCleared(write_only_meta, 0),
+            "a metadata clear dropped an image output");
+    write_only_program.info.info.images.pop_back();
+    write_only_program.info.has_address_writes = true;
+    Require(name, "global address output preserved",
+            !RenderExecutorTestAccess::TryConsumeComputeMetaClear(
+                executor, write_only_input, command) &&
+                !texture_cache.IsMetaCleared(write_only_meta, 0),
+            "a metadata clear dropped a global address write");
+    write_only_program.info.has_address_writes = false;
+
     const bool write_only_consumed =
         RenderExecutorTestAccess::TryConsumeComputeMetaClear(
             executor, write_only_input, command);
@@ -7126,7 +7233,15 @@ public:
             write_only_consumed &&
                 texture_cache.IsMetaCleared(write_only_meta, 0),
             "a metadata write-only fill was not consumed as a clear");
+    context.UnmapMemory(base, allocation_size);
     scheduler.Finish();
+    Require(name, "unmap",
+            LibKernel::Memory::KernelMunmap(base, allocation_size) == 0,
+            "metadata fixture unmap failed");
+    Require(name, "direct release",
+            LibKernel::Memory::KernelReleaseDirectMemory(
+                direct_offset, allocation_size) == 0,
+            "metadata fixture release failed");
     std::printf("[host]    %-32s ok\n", name);
   }
 

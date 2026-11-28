@@ -34,6 +34,9 @@ enum class Counter {
 	ColorMetadataChecks, // GPU clear-key checks of DCC/CMASK metadata.
 	BufferUploadBytes,
 	BufferDownloadBytes,
+	BufferSyncReadbacks,
+	BufferSyncReadbackNs, // Time waiting for and publishing synchronous buffer downloads.
+	BufferExpandedReadbacks,
 	BufferEvictions,
 	// Presentation.
 	FlipsRequested,
