@@ -59,6 +59,9 @@ struct PipelineStaticParameters {
 	uint32_t                   patch_control_points     = 0;
 	bool                       primitive_restart_enable = false;
 	uint32_t                   samples                  = 1;
+	uint32_t                   mixed_attachment_samples = 0;
+	uint32_t                   color_samples[RENDER_COLOR_ATTACHMENTS_MAX] = {};
+	uint32_t                   depth_stencil_samples    = 0;
 	bool                       sample_shading_enable    = false;
 	uint32_t                   shading_sample_count     = 1;
 	uint32_t                   programmable_sample_locations = 0;

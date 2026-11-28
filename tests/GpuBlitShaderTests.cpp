@@ -11,6 +11,27 @@
 
 namespace {
 
+TEST(GuestMultisampling, MixedAttachmentEligibility) {
+	using Libs::Graphics::CanPreserveMixedSamples;
+	const uint32_t equal_colors[] = {2, 2};
+	const uint32_t unequal_colors[] = {2, 4};
+	EXPECT_TRUE(CanPreserveMixedSamples(true, 4, 4, equal_colors));
+	EXPECT_FALSE(CanPreserveMixedSamples(false, 4, 4, equal_colors));
+	EXPECT_FALSE(CanPreserveMixedSamples(true, 4, 4, unequal_colors));
+	EXPECT_FALSE(CanPreserveMixedSamples(true, 8, 4, equal_colors));
+	EXPECT_FALSE(CanPreserveMixedSamples(true, 2, 2, equal_colors));
+	EXPECT_FALSE(CanPreserveMixedSamples(true, 1, 0, equal_colors));
+}
+
+TEST(BlockCompressedImages, PartialBlocksHaveNonzeroExtent) {
+	Libs::Graphics::ImageInfo info {};
+	info.guest_format = Prospero::BufferFormat::kBc6UFloat;
+	info.pitch = 5;
+	info.extent.height = 1;
+	EXPECT_EQ(info.BlockExtent().width, 2u);
+	EXPECT_EQ(info.BlockExtent().height, 1u);
+}
+
 TEST(GuestMultisampling, SignedSampleCoordinates) {
 	using Libs::Graphics::DecodeSampleCoordinate;
 	EXPECT_FLOAT_EQ(DecodeSampleCoordinate(0), 0.5f);

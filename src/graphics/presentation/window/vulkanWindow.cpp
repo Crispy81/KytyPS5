@@ -410,6 +410,9 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
 	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	graphics.amd_mixed_samples_enabled = add(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
+	LOGF("Vulkan AMD mixed attachment samples: %s\n",
+	     graphics.amd_mixed_samples_enabled ? "available" : "unavailable");
 	graphics.sample_locations_enabled = add(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
 	if (graphics.sample_locations_enabled) {
 		vk::PhysicalDeviceProperties2 sample_properties {};

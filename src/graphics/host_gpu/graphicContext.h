@@ -44,6 +44,7 @@ struct GraphicContext {
 	bool                               occlusion_query_precise_enabled       = false;
 	bool                               supports_block_texel_view              = false;
 	bool                               sample_locations_enabled             = false;
+	bool                               amd_mixed_samples_enabled            = false;
 	vk::PhysicalDeviceSampleLocationsPropertiesEXT sample_locations_properties {};
 	bool                                      mesh_shader_enabled                   = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};

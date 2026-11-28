@@ -21,6 +21,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/vertexWindowOffset.h"
+#include "graphics/host_gpu/renderer/sampleLocationPolicy.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
@@ -857,16 +858,27 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		}
 	}
 	ResolveRenderDepthTarget(buffer, targets.depth);
-	// TODO(PPSA09243): Vulkan passes take one sample count. Where PS5 attachments mix counts,
-	// keep those matching the raster count instead of resolving multisampled shadows.
-	const auto colors       = std::span {targets.colors, targets.color_count};
-	const auto pass_samples = targets.depth.image_id ? targets.depth.desc.info.samples
-	                                                 : targets.colors[0].desc.info.samples;
-	if (std::ranges::any_of(colors, [&](const RenderColorInfo& color) {
-		    return color.desc.info.samples != pass_samples;
-	    })) {
-		const auto raster =
-		    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
+	const auto colors = std::span {targets.colors, targets.color_count};
+	const auto depth_samples = targets.depth.image_id ? targets.depth.desc.info.samples : 0u;
+	const auto pass_samples = depth_samples != 0 ? depth_samples :
+	                          (colors.empty() ? 0u : colors.front().desc.info.samples);
+	const auto raster = render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
+	std::array<uint32_t, RENDER_COLOR_ATTACHMENTS_MAX> color_samples {};
+	for (uint32_t i = 0; i < targets.color_count; ++i) {
+		color_samples[i] = colors[i].desc.info.samples;
+	}
+	const bool mixed = CanPreserveMixedSamples(m_context.GetGraphics().amd_mixed_samples_enabled,
+	    raster, depth_samples, std::span {color_samples}.first(targets.color_count));
+	if (mixed) {
+		static std::atomic_bool logged = false;
+		if (!logged.exchange(true, std::memory_order_relaxed)) {
+			LOGF("MSAA: preserving mixed color/depth attachments (%u/%u samples).\n",
+			     color_samples[0], depth_samples);
+		}
+	} else if (std::ranges::any_of(colors, [&](const RenderColorInfo& color) {
+	               return color.desc.info.samples != pass_samples;
+	           })) {
+		// Unsupported combinations still need a software coverage/resolve implementation.
 		const auto dropped = std::ranges::remove_if(colors, [&](const RenderColorInfo& color) {
 			return color.desc.info.samples != raster;
 		});

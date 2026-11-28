@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <span>
+#include <bit>
 
 namespace Libs::Graphics {
 
@@ -17,6 +19,21 @@ constexpr uint32_t PixelShadingSamples(uint32_t samples, uint32_t exponent,
 	if (sample_qualified || exponent >= 32) return samples;
 	const uint32_t requested = 1u << exponent;
 	return requested < samples ? requested : samples;
+}
+
+// Dynamic rendering requires identical color attachment counts. AMD mixed
+// attachments permit depth/stencil to retain a higher sample count than color.
+constexpr bool CanPreserveMixedSamples(bool supported, uint32_t raster, uint32_t depth,
+                                       std::span<const uint32_t> colors) noexcept {
+	if (!supported || colors.empty() || !std::has_single_bit(depth) ||
+	    !std::has_single_bit(colors.front()) || depth > 64 || depth != raster ||
+	    colors.front() >= depth) {
+		return false;
+	}
+	for (const auto samples: colors) {
+		if (samples != colors.front()) return false;
+	}
+	return true;
 }
 
 } // namespace Libs::Graphics

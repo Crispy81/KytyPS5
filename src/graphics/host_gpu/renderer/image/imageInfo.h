@@ -152,8 +152,10 @@ struct ImageInfo {
 		return IsVolume() ? extent.depth : resources.layers;
 	}
 	[[nodiscard]] vk::Extent2D BlockExtent() const noexcept {
-		const auto shift = Prospero::BlockCompressedBytesPerBlock(guest_format) != 0 ? 2u : 0u;
-		return {pitch >> shift, extent.height >> shift};
+		if (!IsBlock()) return {pitch, extent.height};
+		// A partial 4x4 block still occupies a complete encoded block, including tiny mips.
+		return {pitch / 4u + (pitch % 4u != 0),
+		        extent.height / 4u + (extent.height % 4u != 0)};
 	}
 	[[nodiscard]] bool IsCompatible(const ImageInfo& other) const noexcept {
 		return pixel_format == other.pixel_format && samples == other.samples &&

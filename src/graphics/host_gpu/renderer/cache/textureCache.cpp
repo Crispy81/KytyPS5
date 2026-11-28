@@ -735,16 +735,19 @@ namespace BcAlias {
 
 // A raw descriptor for the same encoded blocks must not bind a sampled-only
 // compressed allocation as a storage image. The guest-format buffer is the bridge.
-bool NeedsRawStorage(const ImageInfo& requested, const Image& cached) {
+bool NeedsRawStorage(const ImageInfo& requested, const Image& cached, bool storage) {
 	return cached.info.IsBlock() && !requested.IsBlock() &&
-	       !(cached.backing.usage & vk::ImageUsageFlagBits::eStorage) &&
-	       requested.data == cached.info.data &&
+	       (!(cached.backing.flags & vk::ImageCreateFlagBits::eBlockTexelViewCompatible) ||
+	        (storage && !(cached.backing.usage & vk::ImageUsageFlagBits::eStorage))) &&
+	       requested.data.address == cached.info.data.address &&
+	       requested.data.size <= cached.info.data.size &&
 	       requested.type == cached.info.type &&
 	       requested.tile_mode == cached.info.tile_mode &&
 	       (requested.bytes_per_block == 8 || requested.bytes_per_block == 16) &&
 	       requested.bytes_per_block == cached.info.bytes_per_block &&
 	       requested.samples == 1 && cached.info.samples == 1 &&
-	       requested.resources == cached.info.resources &&
+	       requested.resources.levels <= cached.info.resources.levels &&
+	       requested.resources.layers <= cached.info.resources.layers &&
 	       requested.BlockExtent() == cached.info.BlockExtent();
 }
 
@@ -809,7 +812,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	if (!cached.registered) {
 		return {merged_id};
 	}
-	if (binding == BindingType::Storage && BcAlias::NeedsRawStorage(requested, cached)) {
+	if ((binding == BindingType::Storage || binding == BindingType::Texture) &&
+	    BcAlias::NeedsRawStorage(requested, cached, binding == BindingType::Storage)) {
 		// Publish the original encoded bytes before replacing the sampled allocation.
 		BcAlias::Resolve(*this, cached_id, merged_id);
 		const auto* remaining = m_slot_images.try_get(cached_id);
@@ -1373,7 +1377,8 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			// Even equal-sized allocations can place different mip chains within one tail tile.
 			if (image.info.resources.levels == desc.info.resources.levels &&
 			    SameBacking(image.info, desc.info, exact_format) &&
-			    !(desc.type == BindingType::Storage && BcAlias::NeedsRawStorage(desc.info, image))) {
+			    !((desc.type == BindingType::Storage || desc.type == BindingType::Texture) &&
+			      BcAlias::NeedsRawStorage(desc.info, image, desc.type == BindingType::Storage))) {
 				result = id;
 			} else if (image.SafeToDownload() &&
 			           BcAlias::Matches(desc.info, image.info)) {

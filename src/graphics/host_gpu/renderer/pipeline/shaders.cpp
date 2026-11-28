@@ -418,6 +418,20 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	rendering_info.depthAttachmentFormat   = rendering.depth_format;
 	rendering_info.stencilAttachmentFormat = rendering.stencil_format;
 	pipeline_info.pNext                    = &rendering_info;
+	std::array<vk::SampleCountFlagBits, RENDER_COLOR_ATTACHMENTS_MAX> color_samples {};
+	vk::AttachmentSampleCountInfoAMD mixed_samples {};
+	if (static_params.mixed_attachment_samples) {
+		EXIT_IF(!graphics.amd_mixed_samples_enabled);
+		for (uint32_t slot = 0; slot < rendering.color_count; ++slot) {
+			const auto count = static_params.color_samples[slot];
+			color_samples[slot] = vulkan_sample_count(count == 0 ? 1u : count);
+		}
+		mixed_samples.colorAttachmentCount = rendering.color_count;
+		mixed_samples.pColorAttachmentSamples = color_samples.data();
+		mixed_samples.depthStencilAttachmentSamples =
+		    vulkan_sample_count(static_params.depth_stencil_samples);
+		rendering_info.pNext = &mixed_samples;
+	}
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
 	pipeline_info.pVertexInputState        = mesh ? nullptr : &vertex_input_info;

@@ -870,6 +870,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 			static_params.color_mask[slot] = 1u;
 		}
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;
+		static_params.color_samples[slot] = colors[i].desc.info.samples;
 		if (attachment_samples == 0) {
 			attachment_samples = colors[i].desc.info.samples;
 		} else if (attachment_samples != colors[i].desc.info.samples) {
@@ -934,11 +935,19 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		rendering.stencil_format = aspects & vk::ImageAspectFlagBits::eStencil
 		                               ? depth.desc.view_info.format
 		                               : vk::Format::eUndefined;
+		static_params.depth_stencil_samples = depth.desc.info.samples;
 		if (attachment_samples == 0) {
 			attachment_samples = depth.desc.info.samples;
 		} else if (attachment_samples != depth.desc.info.samples) {
-			EXIT("mixed color/depth sample counts are unsupported: %u and %u\n", attachment_samples,
-			     depth.desc.info.samples);
+			const auto raster = render_sample_count(ctx.GetAaConfig().msaa_num_samples);
+			const std::array counts {attachment_samples};
+			if (!CanPreserveMixedSamples(m_graphics.amd_mixed_samples_enabled, raster,
+			                             depth.desc.info.samples, counts)) {
+				EXIT("mixed color/depth sample counts are unsupported: %u and %u\n",
+				     attachment_samples, depth.desc.info.samples);
+			}
+			static_params.mixed_attachment_samples = 1;
+			attachment_samples = depth.desc.info.samples;
 		}
 	}
 	if (color_count == 0 && !with_depth) {
