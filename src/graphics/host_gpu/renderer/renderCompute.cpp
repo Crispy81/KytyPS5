@@ -498,6 +498,16 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 		}
 	}
 
+	const auto& group_limits = m_context.GetGraphics().GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount;
+	if (thread_group_x > group_limits[0] || thread_group_y > group_limits[1] ||
+	    thread_group_z > group_limits[2]) {
+		EXIT("Compute dispatch exceeds Vulkan workgroup limits: shader=0x%016" PRIx64
+		     " groups=%ux%ux%u limits=%ux%ux%u\n", program.shader_hash,
+		     thread_group_x, thread_group_y, thread_group_z,
+		     group_limits[0], group_limits[1], group_limits[2]);
+	}
+	m_context.GetCommandScheduler().RecordGpuWork("dispatch", {program.shader_hash, 0, 0, 0},
+	    thread_group_x, thread_group_y, thread_group_z);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DISPATCH_INITIATOR_ORDERED_APPEND_ENABLE = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
@@ -577,6 +587,8 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	m_context.GetCommandScheduler().RecordGpuWork("dispatch-indirect",
+	    {program.shader_hash, 0, 0, 0}, 0, 0, mode, args_addr);
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
