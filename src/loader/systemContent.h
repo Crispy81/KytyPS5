@@ -12,6 +12,7 @@ namespace Loader {
 
 void     SystemContentLoadParamSfo(const std::filesystem::path& file_name);
 bool     SystemContentIsTrinityMode();
+std::filesystem::path SystemContentGetAppRoot();
 bool     SystemContentParamSfoGetInt(const char* name, int32_t* value);
 bool     SystemContentParamSfoGetString(const char* name, std::string* value);
 bool     SystemContentParamSfoGetString(const char* name, char* value, size_t value_size);
