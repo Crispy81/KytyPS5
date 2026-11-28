@@ -46,8 +46,8 @@ struct ReadbackWindow {
 		// nearby window faults. Writes still publish GPU data before CPU ownership.
 		const auto begin = local_hits != 0 ? std::max(group, base) : start;
 		const auto local_end = group + std::min(MaxSize, limit - group);
-		const auto end = std::max({start + std::min(width, limit - start), address + size,
-		                           local_hits != 0 ? local_end : start});
+		const auto predicted_end = local_hits != 0 ? local_end : start + std::min(width, limit - start);
+		const auto end = std::max(predicted_end, address + size);
 		owner_begin = base;
 		owner_end = limit;
 		previous_end = end;
