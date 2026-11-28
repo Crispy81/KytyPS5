@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDiscovery.h"
+#include "loader/systemContent.h"
 
 #include "common/logging/log.h"
 #include "common/parallelFor.h"
@@ -145,6 +147,9 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	if (header.empty()) {
 		return;
 	}
+	auto discovery_path = path;
+	discovery_path.replace_extension(".discovery");
+	const auto discovered = DiscoverGameShaders(Loader::SystemContentGetAppRoot(), discovery_path);
 	const auto           start = std::chrono::steady_clock::now();
 	std::vector<uint8_t> bytes;
 	if (Common::File file;
@@ -163,11 +168,29 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
 	if (reusable) {
 		records = records.subspan(header.size());
-		while (LoadRecord(records)) {
+		std::vector<WarmupModule> pending;
+		const auto compile_batch = [&] {
+			Common::ParallelFor(pending.size(), [&](size_t i) {
+				auto& entry = pending[i];
+				entry.program->modules[entry.index].module = CompileSPV(entry.spirv, m_graphics.device);
+			});
+			pending.clear();
+		};
+		while (LoadRecord(records, pending)) {
+			if (pending.size() >= 128) compile_batch();
 		}
+		compile_batch();
 	}
 	// A damaged record ends the store; the records before it stay.
 	m_store.Open(path, header, reusable ? bytes.size() - records.size() : 0);
+
+	std::unordered_set<uint64_t> matched;
+	for (const auto& [key, program]: m_program_cache) {
+		if (!program.modules.empty() && discovered.contains(key.hash)) matched.insert(key.hash);
+	}
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "Shader discovery: {} candidates match cached runtime programs; {} need runtime state\n",
+	    matched.size(), discovered.size() - matched.size()));
 
 	const auto modules = MapModules();
 	std::vector<Common::UniqueFunction<void>> jobs;
@@ -201,7 +224,8 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	        .count()));
 }
 
-bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
+bool PipelineCache::LoadRecord(std::span<const uint8_t>& records,
+                               std::vector<WarmupModule>& pending) {
 	Frame frame;
 	if (records.size() < sizeof(frame)) {
 		return false;
@@ -242,8 +266,9 @@ bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
 				m_program_cache.erase(program);
 				return false;
 			}
-			module.module = CompileSPV(spirv, m_graphics.device);
-			program->second.modules.push_back(std::move(module));
+			auto& owner = program->second;
+			pending.push_back({&owner, owner.modules.size(), std::move(spirv)});
+			owner.modules.push_back(std::move(module));
 			break;
 		}
 		case Record::GraphicsPipeline: {
