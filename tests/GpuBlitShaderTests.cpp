@@ -25,7 +25,7 @@ TEST(GuestMultisampling, MixedAttachmentEligibility) {
 
 TEST(BlockCompressedImages, PartialBlocksHaveNonzeroExtent) {
 	Libs::Graphics::ImageInfo info {};
-	info.guest_format = Prospero::BufferFormat::kBc6UFloat;
+	info.guest_format = Libs::Graphics::Prospero::BufferFormat::kBc6UFloat;
 	info.pitch = 5;
 	info.extent.height = 1;
 	EXPECT_EQ(info.BlockExtent().width, 2u);
