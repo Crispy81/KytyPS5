@@ -119,6 +119,20 @@ std::array<IR::U32, 2> Translator::BallotMask(IR::U1 value) {
 	        program.wave_size == 64u ? ir.CompositeExtract(mask, 1) : IR::U32(IR::Value(0u))};
 }
 
+// Pixel scalar EXEC words must exclude helper invocations, which are not
+// guaranteed to participate in subgroup voting. Keep the separate per-lane
+// predicate intact so helper invocations can still compute derivatives.
+std::array<IR::U32, 2> Translator::MaskPixelExec(const std::array<IR::U32, 2>& words) {
+	if (program.stage != ShaderType::Pixel) {
+		return words;
+	}
+	const auto live = ir.Emit(IR::ValueOpcode::LiveMask);
+	return {ir.BitwiseAnd(words[0], ir.CompositeExtract(live, 0)),
+	        program.wave_size == 64u
+	            ? ir.BitwiseAnd(words[1], ir.CompositeExtract(live, 1))
+	            : words[1]};
+}
+
 std::array<IR::U32, 2> Translator::ExecMask() {
 	return {ir.GetExecLo(), program.wave_size == 64u ? ir.GetExecHi() : IR::U32(IR::Value(0u))};
 }
@@ -346,14 +360,18 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 			ir.SetVcc(ThreadBit({ir.GetVccLo(), value}));
 			break;
 		case Decoder::OperandKind::M0: ir.SetM0(IR::U32(value)); break;
-		case Decoder::OperandKind::ExecLo:
-			ir.SetExecLo(IR::U32(value));
-			ir.SetExec(ThreadBit({value, ir.GetExecHi()}));
+		case Decoder::OperandKind::ExecLo: {
+			const std::array words {value, ir.GetExecHi()};
+			ir.SetExec(ThreadBit(words));
+			ir.SetExecLo(MaskPixelExec(words)[0]);
 			break;
-		case Decoder::OperandKind::ExecHi:
-			ir.SetExecHi(IR::U32(value));
-			ir.SetExec(ThreadBit({ir.GetExecLo(), value}));
+		}
+		case Decoder::OperandKind::ExecHi: {
+			const std::array words {ir.GetExecLo(), value};
+			ir.SetExec(ThreadBit(words));
+			ir.SetExecHi(MaskPixelExec(words)[1]);
 			break;
+		}
 		case Decoder::OperandKind::Scc:
 			ir.SetScc(ir.INotEqual(value, IR::U32(IR::Value(0u))));
 			break;
@@ -590,11 +608,13 @@ void Translator::WriteU32Pair(const Decoder::Operand&       operand,
 		return;
 	}
 	switch (operand.kind) {
-		case Decoder::OperandKind::ExecLo:
+		case Decoder::OperandKind::ExecLo: {
+			const auto words = MaskPixelExec(value);
 			ir.SetExec(ThreadBit(value));
-			ir.SetExecLo(value[0]);
-			ir.SetExecHi(value[1]);
+			ir.SetExecLo(words[0]);
+			ir.SetExecHi(words[1]);
 			return;
+		}
 		case Decoder::OperandKind::VccLo:
 			ir.SetVcc(ThreadBit(value));
 			ir.SetVccLo(value[0]);
@@ -703,9 +723,10 @@ void Translator::WriteMask(const Decoder::Operand& operand, IR::U1 value,
 		}
 		case Decoder::OperandKind::ExecLo:
 		case Decoder::OperandKind::ExecHi: {
+			const auto words = MaskPixelExec(mask);
 			ir.SetExec(value);
-			ir.SetExecLo(mask[0]);
-			ir.SetExecHi(mask[1]);
+			ir.SetExecLo(words[0]);
+			ir.SetExecHi(words[1]);
 			return;
 		}
 		case Decoder::OperandKind::VccLo:
